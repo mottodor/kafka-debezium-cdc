@@ -1,0 +1,19 @@
+# Local environment and secrets
+/.env
+/.env.*
+!/.env.example
+
+# Generated runtime state, rendered configs, SQLite sinks, and evidence
+/.runtime/
+
+# SQLite files created outside the standard runtime directory
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+
+# Python-generated files
+__pycache__/
+*.py[cod]
