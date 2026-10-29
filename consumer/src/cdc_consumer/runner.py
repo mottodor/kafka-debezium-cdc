@@ -33,7 +33,13 @@ class FaultAfterDurableCommit(RunnerError):
     """Controlled AC-004 stop after SQLite commit and before Kafka commit."""
 
 
+class SQLiteSizeLimitError(RunnerError):
+    """The SQLite sink reached its bounded storage stop threshold."""
+
+
 BASE_SCHEMA_VERSION = 1
+SQLITE_MAX_BYTES = 1024 * 1024 * 1024
+SQLITE_STOP_HEADROOM_BYTES = 16 * 1024 * 1024
 
 
 class KafkaMessage(Protocol):
@@ -95,6 +101,8 @@ class RunnerConfig:
     poll_timeout_seconds: float = 1.0
     max_messages: int | None = None
     fault_after_sqlite_commit_at: KafkaCoordinate | None = None
+    sqlite_max_bytes: int = SQLITE_MAX_BYTES
+    sqlite_stop_headroom_bytes: int = SQLITE_STOP_HEADROOM_BYTES
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str] | None = None) -> RunnerConfig:
@@ -234,6 +242,67 @@ def kafka_record_from_message(message: KafkaMessage) -> KafkaRecord:
     )
 
 
+def _sqlite_pragma_integer(connection: sqlite3.Connection, pragma: str) -> int:
+    row = connection.execute(f"PRAGMA {pragma}").fetchone()
+    if row is None or isinstance(row[0], bool) or not isinstance(row[0], int):
+        raise SQLiteSizeLimitError(f"SQLite PRAGMA {pragma} returned an invalid value")
+    return row[0]
+
+
+def configure_sqlite_size_guard(
+    connection: sqlite3.Connection,
+    max_bytes: int = SQLITE_MAX_BYTES,
+    stop_headroom_bytes: int = SQLITE_STOP_HEADROOM_BYTES,
+) -> None:
+    if (
+        isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or isinstance(stop_headroom_bytes, bool)
+        or not isinstance(stop_headroom_bytes, int)
+        or max_bytes <= 0
+        or not 0 < stop_headroom_bytes < max_bytes
+    ):
+        raise SQLiteSizeLimitError("SQLite size guard limits are invalid")
+    page_size = _sqlite_pragma_integer(connection, "page_size")
+    page_count = _sqlite_pragma_integer(connection, "page_count")
+    if page_size <= 0 or page_count < 0:
+        raise SQLiteSizeLimitError("SQLite page metrics are invalid")
+    max_pages = max_bytes // page_size
+    if max_pages <= 0 or page_count > max_pages:
+        raise SQLiteSizeLimitError(
+            "SQLite sink already exceeds the configured 1 GiB hard limit"
+        )
+    configured = connection.execute(
+        f"PRAGMA max_page_count = {max_pages}"
+    ).fetchone()
+    if configured != (max_pages,):
+        raise SQLiteSizeLimitError("SQLite max_page_count hard limit was not applied")
+    ensure_sqlite_below_stop_threshold(
+        connection,
+        max_bytes=max_bytes,
+        stop_headroom_bytes=stop_headroom_bytes,
+    )
+
+
+def ensure_sqlite_below_stop_threshold(
+    connection: sqlite3.Connection,
+    *,
+    max_bytes: int = SQLITE_MAX_BYTES,
+    stop_headroom_bytes: int = SQLITE_STOP_HEADROOM_BYTES,
+) -> int:
+    page_size = _sqlite_pragma_integer(connection, "page_size")
+    page_count = _sqlite_pragma_integer(connection, "page_count")
+    allocated_bytes = page_size * page_count
+    stop_at_bytes = max_bytes - stop_headroom_bytes
+    if allocated_bytes >= stop_at_bytes:
+        raise SQLiteSizeLimitError(
+            "SQLite sink reached the controlled stop threshold: "
+            f"allocated_bytes={allocated_bytes} stop_at_bytes={stop_at_bytes} "
+            f"hard_limit_bytes={max_bytes}; archive the generation or create a new one"
+        )
+    return allocated_bytes
+
+
 def commit_message_synchronously(consumer: KafkaConsumer, message: KafkaMessage) -> int:
     expected_offset = message.offset() + 1
     try:
@@ -302,9 +371,19 @@ def run_consumer(
     processor: Callable[[sqlite3.Connection, str, KafkaRecord], ProcessResult] = process_record,
     emit: Callable[[str], None] = print,
 ) -> int:
+    configure_sqlite_size_guard(
+        connection,
+        max_bytes=config.sqlite_max_bytes,
+        stop_headroom_bytes=config.sqlite_stop_headroom_bytes,
+    )
     consumer.subscribe(list(config.topics))
     committed_messages = 0
     while config.max_messages is None or committed_messages < config.max_messages:
+        ensure_sqlite_below_stop_threshold(
+            connection,
+            max_bytes=config.sqlite_max_bytes,
+            stop_headroom_bytes=config.sqlite_stop_headroom_bytes,
+        )
         message = consumer.poll(config.poll_timeout_seconds)
         if message is None:
             continue

@@ -804,6 +804,20 @@ def _existing_token(
     return None if row is None else OrderingToken(*row)
 
 
+def _set_raw_durable_commit_time(
+    connection: sqlite3.Connection,
+    record: KafkaRecord,
+    committed_at: str,
+) -> None:
+    updated = connection.execute(
+        "UPDATE raw_events SET durable_committed_at = ? "
+        "WHERE topic = ? AND partition = ? AND offset = ?",
+        (committed_at, record.topic, record.partition, record.offset),
+    ).rowcount
+    if updated != 1:
+        raise RuntimeError("durable commit timestamp update did not match one raw event")
+
+
 def _insert_raw(
     connection: sqlite3.Connection,
     generation: str,
@@ -1033,6 +1047,9 @@ def process_record(
         )
         if parsed.token is None:
             _insert_raw(connection, generation, record, parsed, "tombstone", timestamp)
+            _set_raw_durable_commit_time(
+                connection, record, observed_at or _utc_now()
+            )
             connection.execute("COMMIT")
             return ProcessResult("tombstone", False, None)
 
@@ -1060,6 +1077,9 @@ def process_record(
                 raise ProjectionWriteError(
                     f"SQLite projection rejected {parsed.table}/{parsed.entity_id}: {error}"
                 ) from error
+        _set_raw_durable_commit_time(
+            connection, record, observed_at or _utc_now()
+        )
         connection.execute("COMMIT")
         return ProcessResult(status, False, parsed.token)
     except ProcessingError as error:

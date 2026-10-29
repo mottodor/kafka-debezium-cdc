@@ -963,3 +963,58 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: R-07
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-07`; behavioral contract — `docs/spec.md` §6 и §9, `AC-009`, `AC-011`
+- Status: REVIEW_READY
+- Updated: 2026-10-29T23:46:57+03:00
+- Baseline HEAD: `6395c908abba307c932f0c48561f861066fa8f4c`
+
+### Progress
+- Implemented: добавлен bounded SQLite guard с hard limit 1 GiB и controlled stop за 16 MiB до него; `lag` выводит раздельные partition lag/event age/WAL/retention/SQLite sections; topic verifier получил read-only режим; WAL warning и 5 GiB preflight guards усилены. После review-fix raw event timestamp обновляется непосредственно перед SQLite `COMMIT`; regression с 150 ms projection delay и live g001 probe прошли. Source/sink восстановлены, services остановлены, 8 volumes/network сохранены.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-07`, наблюдаемый выход | PASS | fast final: host 38 tests, shell syntax, `py_compile`, `git diff --check`, LSP 0 findings; 6 mutations обнаружены. standard final: exact-image 38 tests, runtime dependency probe 2.16.0, network-none derived build; live g001 diagnostics/guards прошли, source/sink parity и lag 0 восстановлены. |
+| `docs/spec.md` §9, `AC-009` | PASS | acceptance contribution final: regression с 150 ms SQLite projection delay доказал, что delay входит в `durable_committed_at`; удаление boundary-update mutation обнаружено. Live stopped consumer дал 9 partition rows и `customers/1 LAG=1`; отдельные sections показали event age `298 ms`, slot WAL и retained bytes; независимый расчёт coordinate `customers:1:11` подтвердил `298 ms`. Restart/restore вернули source/sink `Bob Brown` и lag 0. |
+| `docs/spec.md` §9, `AC-011` | PASS | acceptance contribution: live read-only verifier подтвердил Kafka delete/24h/256MiB/64MiB configs; slot query вывел `wal_status`, retained bytes, numeric `safe_wal_size`, а pure 512MiB warning/lost/inconsistent cases дали ожидаемые outcomes. Exact-image scaled regression установил hard `max_page_count`, controlled stop до poll/commit и no offset commit; live SQLite diagnostic показал `184320/1056964608/1073741824 bytes, OK`. Mock Docker storage 4,000,000 KiB был отклонён preflight exit 69; real preflight показал 11 GiB. Полное segment-aging load evidence остаётся будущей E-07/R-09 orchestration. |
+
+### Issues
+#### R-07/B01
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: обязательный gate `EVIDENCE_GATE`; exact-image standard checks
+- Problem: clean network-disabled build финального Dockerfile не имеет BuildKit cache dependency layer и пытается повторно скачать `confluent-kafka==2.16.0`.
+- Evidence: `docker build --network=none --pull=false --tag cdc-lab-consumer:r07-check consumer`, exit 1 после 8.98 s; exact dependency недоступна без сети, существующий проверенный image `cdc-lab-consumer:g001` доступен локально.
+- Unblock: построить network-none derived image от существующего exact image, скопировав только новый source, затем выполнить exact-image tests/runtime без dependency download.
+- Resolution: derived build от exact verified image прошёл с `--network=none` за 10.68 s; runtime version probe подтвердил `confluent-kafka/librdkafka 2.16.0`, `scripts/check unit` выполнил 37 tests в tagged final image за 0.92 s.
+
+#### R-07/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-009`; обязательный gate `EVIDENCE_GATE`
+- Problem: первый runtime harness интерпретировал колонку `LOG-END-OFFSET` как `LAG`, а post-restart zero-lag loop из-за того же индекса завершился exit 1.
+- Evidence: paused output фактически содержит девять partition rows и `LAG=1` для `customers/1`, но assertion использовал `row[4]` вместо `row[5]`; первая corrected retry дошла до consumer catch-up (`committed_offset=8`), но sink probe был пустым без interactive stdin; следующая попытка остановилась на Python `-c` quoting SyntaxError до assertion. Все cleanup восстановили source `Bob Brown` и initial_stopped state.
+- Unblock: использовать шестую колонку `LAG` и проверенный `docker exec --interactive ... python -` sink probe, затем повторить stopped-consumer positive-lag assertion, catch-up/restore parity и final zero-lag check без новых quoting variants.
+- Resolution: финальный runtime script использовал `row[5]` и interactive probe; stopped consumer дал exact positive lag, restart обработал probe, restore вернул `Bob Brown` в source/sink и все 9 partitions в lag 0; services затем остановлены без удаления persistent resources.
+
+#### R-07/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-009`; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: `durable_committed_at` фиксируется до `BEGIN`/parsing/projection и выдаётся за время durable SQLite commit, поэтому processing/commit delay не входит в event age.
+- Evidence: reviewer call 1, `VERDICT BLOCK`: `processing.py` получает `_utc_now()` до transaction, а `scripts/lab` вычисляет age из этого поля; независимый live расчёт проверял ту же сохранённую границу и не опровергает finding.
+- Unblock: обновлять raw timestamp непосредственно перед `COMMIT` в той же transaction, добавить regression с намеренной задержкой projection и повторить affected checks/live AC-009/fresh review.
+- Resolution: raw coordinate timestamp обновляется непосредственно перед `COMMIT` в той же transaction; 150 ms trigger delay regression прошёл host/exact-image и mutation без update упала. Повторный live probe на новом image дал event age `298 ms` для `customers:1:11`, независимый расчёт совпал; source/sink и lag восстановлены.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: call 1 выявил B03; после targeted fix call 2 проверил полный финальный diff/status, подтвердил durable-boundary timestamp, atomicity/duplicate/error semantics и вернул `VERDICT OK` без blockers. DEFERRED: actual Kafka segment aging до E-07/R-09. IMPROVEMENT: production path корректен, но test-only `observed_at` может задавать ранний durable timestamp; executable shell regressions следует перенести в E-07 harness.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.

@@ -287,6 +287,35 @@ print(
 PY
 }
 
+sqlite_size_program() {
+  cat <<'PY'
+import os
+import sqlite3
+
+from cdc_consumer.runner import SQLITE_MAX_BYTES, SQLITE_STOP_HEADROOM_BYTES
+
+connection = sqlite3.connect(
+    f"file:{os.environ['SQLITE_SINK_PATH']}?mode=ro", uri=True
+)
+try:
+    page_size = connection.execute("PRAGMA page_size").fetchone()[0]
+    page_count = connection.execute("PRAGMA page_count").fetchone()[0]
+    freelist_count = connection.execute("PRAGMA freelist_count").fetchone()[0]
+finally:
+    connection.close()
+allocated_bytes = page_size * page_count
+used_bytes = page_size * (page_count - freelist_count)
+stop_at_bytes = SQLITE_MAX_BYTES - SQLITE_STOP_HEADROOM_BYTES
+status = "STOP" if allocated_bytes >= stop_at_bytes else "OK"
+print(
+    f"allocated_bytes={allocated_bytes} used_bytes={used_bytes} "
+    f"stop_at_bytes={stop_at_bytes} hard_limit_bytes={SQLITE_MAX_BYTES} status={status}"
+)
+if status == "STOP":
+    raise SystemExit(69)
+PY
+}
+
 verify_consumer_volume_scope() {
   local generation="$1"
   local volume="${COMPOSE_PROJECT}_consumer-data"
@@ -323,24 +352,33 @@ migrate_sink() {
       --target-version 2
 }
 
-sink_event_age() {
+run_sink_readonly_program() {
   local generation="$1"
+  local program_function="$2"
   local volume
   if [[ "$(service_state consumer)" == "running" ]]; then
-    event_age_program | compose exec --no-TTY consumer python -
+    "$program_function" | compose exec --no-TTY consumer python -
     return
   fi
 
   docker image inspect "$CONSUMER_IMAGE" >/dev/null 2>&1 \
     || fail "consumer image is unavailable for read-only sink inspection" 69
   volume="$(verify_consumer_volume_scope "$generation")"
-  event_age_program | docker run --rm --interactive \
+  "$program_function" | docker run --rm --interactive \
     --network none \
     --read-only \
     --volume "$volume:/data:ro" \
     --env "SQLITE_SINK_PATH=/data/cdc-${generation}.sqlite3" \
     "$CONSUMER_IMAGE" \
     python -
+}
+
+sink_event_age() {
+  run_sink_readonly_program "$1" event_age_program
+}
+
+sink_sqlite_size() {
+  run_sink_readonly_program "$1" sqlite_size_program
 }
 
 status_generation() {
@@ -408,6 +446,12 @@ lag_generation() {
     '
   )"
   validate_replication_slot_metric "$slot_line" postgres_cdc_g001
+
+  printf '%s\n' '--- kafka_topic_retention_bounds ---'
+  compose exec --no-TTY kafka /opt/cdc/kafka/bootstrap-topics.sh --verify-only
+
+  printf '%s\n' '--- sqlite_sink_size_guard ---'
+  sink_sqlite_size "$generation"
 }
 
 stop_services() {

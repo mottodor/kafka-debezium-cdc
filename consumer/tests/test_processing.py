@@ -6,7 +6,9 @@ import json
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -341,6 +343,29 @@ class ProcessingTests(unittest.TestCase):
         return process_record(
             self.connection, "g001", record, observed_at=self.observed_at
         )
+
+    def test_durable_commit_timestamp_includes_projection_delay(self) -> None:
+        delay_seconds = 0.15
+        self.connection.create_function(
+            "delay_before_commit", 0, lambda: time.sleep(delay_seconds)
+        )
+        self.connection.execute(
+            "CREATE TRIGGER delay_customer_projection "
+            "AFTER INSERT ON customers_current "
+            "BEGIN SELECT delay_before_commit(); END"
+        )
+        started_at = datetime.now(timezone.utc)
+        process_record(self.connection, "g001", make_record(offset=74))
+        returned_at = datetime.now(timezone.utc)
+        stored = self.connection.execute(
+            "SELECT durable_committed_at FROM raw_events WHERE offset = 74"
+        ).fetchone()[0]
+        durable_boundary = datetime.fromisoformat(stored.replace("Z", "+00:00"))
+        self.assertGreaterEqual(
+            (durable_boundary - started_at).total_seconds(),
+            delay_seconds * 0.8,
+        )
+        self.assertLessEqual(durable_boundary, returned_at)
 
     def test_applies_snapshot_and_independent_child_projections(self) -> None:
         order = make_record(table="orders", row_id=103, operation="r", lsn=50)

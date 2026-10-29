@@ -8,6 +8,22 @@ readonly retention_bytes="268435456"
 readonly segment_bytes="67108864"
 readonly cleanup_policy="delete"
 
+verify_only=false
+case "$#" in
+  0) ;;
+  1)
+    [[ "$1" == "--verify-only" ]] || {
+      printf 'usage: bootstrap-topics.sh [--verify-only]\n' >&2
+      exit 64
+    }
+    verify_only=true
+    ;;
+  *)
+    printf 'usage: bootstrap-topics.sh [--verify-only]\n' >&2
+    exit 64
+    ;;
+esac
+
 require_env() {
   local name="$1"
   if [[ -z "${!name:-}" ]]; then
@@ -122,13 +138,15 @@ verify_topic() {
     "$topic" "$expected_partitions" "$retention_ms" "$retention_bytes" "$segment_bytes" "$cleanup_policy"
 }
 
-for topic in "${table_topics[@]}"; do
-  create_topic "$topic" 3
-done
+if [[ "$verify_only" == false ]]; then
+  for topic in "${table_topics[@]}"; do
+    create_topic "$topic" 3
+  done
 
-# Debezium writes transaction boundary records here when transaction metadata is enabled.
-# It is generation-scoped and explicit because broker and worker topic auto-creation are disabled.
-create_topic "$transaction_topic" 1
+  # Debezium writes transaction boundary records here when transaction metadata is enabled.
+  # It is generation-scoped and explicit because broker and worker topic auto-creation are disabled.
+  create_topic "$transaction_topic" 1
+fi
 
 for topic in "${table_topics[@]}"; do
   verify_topic "$topic" 3

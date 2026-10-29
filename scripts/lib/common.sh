@@ -177,6 +177,13 @@ validate_replication_slot_metric() {
      && "$safe_wal_size" =~ ^[0-9]+$ \
      && "$threshold" =~ ^(OK|WARNING)$ ]] \
     || fail "replication slot metric values are invalid" 69
+  if ((retained_wal_bytes >= 512 * 1024 * 1024)); then
+    [[ "$threshold" == "WARNING" ]] \
+      || fail "replication slot warning threshold is inconsistent" 69
+  else
+    [[ "$threshold" == "OK" ]] \
+      || fail "replication slot warning threshold is inconsistent" 69
+  fi
   printf '%s\n' "$slot_line"
 }
 

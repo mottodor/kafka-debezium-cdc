@@ -15,6 +15,8 @@ if str(SOURCE_ROOT) not in sys.path:
 
 from cdc_consumer.processing import ProcessResult
 from cdc_consumer.runner import (
+    SQLITE_MAX_BYTES,
+    SQLITE_STOP_HEADROOM_BYTES,
     FaultAfterDurableCommit,
     KafkaCoordinate,
     KafkaMessage,
@@ -22,7 +24,9 @@ from cdc_consumer.runner import (
     OffsetCommitError,
     RunnerConfig,
     RunnerError,
+    SQLiteSizeLimitError,
     commit_message_synchronously,
+    configure_sqlite_size_guard,
     kafka_record_from_message,
     process_message_and_commit,
     run_consumer,
@@ -127,6 +131,8 @@ def config(
     *,
     max_messages: int | None = 1,
     fault: KafkaCoordinate | None = None,
+    sqlite_max_bytes: int = SQLITE_MAX_BYTES,
+    sqlite_stop_headroom_bytes: int = SQLITE_STOP_HEADROOM_BYTES,
 ) -> RunnerConfig:
     return RunnerConfig(
         generation="g001",
@@ -141,6 +147,8 @@ def config(
         poll_timeout_seconds=0.1,
         max_messages=max_messages,
         fault_after_sqlite_commit_at=fault,
+        sqlite_max_bytes=sqlite_max_bytes,
+        sqlite_stop_headroom_bytes=sqlite_stop_headroom_bytes,
     )
 
 
@@ -162,8 +170,29 @@ class RunnerTests(unittest.TestCase):
         self.assertIn('[[ "$(service_state consumer)" != "running" ]]', lab_text)
         self.assertIn("--network none", lab_text)
         self.assertIn("--target-version 2", lab_text)
+        for heading in (
+            "--- kafka_consumer_group_lag_by_partition ---",
+            "--- durable_event_age_ms ---",
+            "--- postgres_replication_slot_retained_wal ---",
+            "--- kafka_topic_retention_bounds ---",
+            "--- sqlite_sink_size_guard ---",
+        ):
+            self.assertIn(heading, lab_text)
+        topic_script = (
+            PROJECT_ROOT / "config" / "kafka" / "bootstrap-topics.sh"
+        ).read_text()
+        self.assertIn('[[ "$1" == "--verify-only" ]]', topic_script)
+        self.assertIn('if [[ "$verify_only" == false ]]; then', topic_script)
+        common_script = (PROJECT_ROOT / "scripts" / "lib" / "common.sh").read_text()
+        self.assertIn("retained_wal_bytes >= 512 * 1024 * 1024", common_script)
+        self.assertIn(
+            '[[ "$threshold" == "WARNING" ]]',
+            common_script,
+        )
         runner_text = (SOURCE_ROOT / "cdc_consumer" / "runner.py").read_text()
         self.assertIn("BASE_SCHEMA_VERSION = 1", runner_text)
+        self.assertIn("SQLITE_MAX_BYTES = 1024 * 1024 * 1024", runner_text)
+        self.assertIn("SQLITE_STOP_HEADROOM_BYTES = 16 * 1024 * 1024", runner_text)
         self.assertIn("target_version=BASE_SCHEMA_VERSION", runner_text)
 
     def setUp(self) -> None:
@@ -234,6 +263,36 @@ class RunnerTests(unittest.TestCase):
 
         no_timestamp = kafka_record_from_message(FakeMessage(timestamp=(0, -1)))
         self.assertIsNone(no_timestamp.timestamp_ms)
+
+    def test_sqlite_size_guard_sets_hard_limit_and_stops_before_poll(self) -> None:
+        page_size = self.connection.execute("PRAGMA page_size").fetchone()[0]
+        page_count = self.connection.execute("PRAGMA page_count").fetchone()[0]
+        max_bytes = (page_count + 2) * page_size
+        headroom_bytes = 2 * page_size
+
+        with self.assertRaisesRegex(SQLiteSizeLimitError, "controlled stop threshold"):
+            configure_sqlite_size_guard(
+                self.connection,
+                max_bytes=max_bytes,
+                stop_headroom_bytes=headroom_bytes,
+            )
+        self.assertEqual(
+            self.connection.execute("PRAGMA max_page_count").fetchone(),
+            (max_bytes // page_size,),
+        )
+
+        consumer = FakeConsumer([FakeMessage()])
+        with self.assertRaisesRegex(SQLiteSizeLimitError, "controlled stop threshold"):
+            run_consumer(
+                consumer,
+                self.connection,
+                config(
+                    sqlite_max_bytes=max_bytes,
+                    sqlite_stop_headroom_bytes=headroom_bytes,
+                ),
+            )
+        self.assertEqual(consumer.subscriptions, [])
+        self.assertEqual(consumer.commits, [])
 
     def test_run_commits_only_after_durable_processor_return(self) -> None:
         trace: list[str] = []
