@@ -22,6 +22,7 @@ INITIAL_SNAPSHOT_MARKERS = {
 }
 EMPTY_STRING_ALLOWED_FIELDS = {
     ("customers", "email"),
+    ("customers", "phone"),
     ("payments", "provider_ref"),
 }
 ROW_FIELD_TYPES: dict[str, dict[str, str]] = {
@@ -275,18 +276,40 @@ def _validate_basic_field(
 
 
 def _validate_row_schema(
-    table: str, topic: str, container: dict[str, Any], description: str
+    table: str,
+    topic: str,
+    container: dict[str, Any],
+    description: str,
+    *,
+    customers_phone_enabled: bool,
 ) -> dict[str, dict[str, Any]]:
     if container.get("type") != "struct" or container.get("optional") is not True:
         _raise(f"{description} must be an optional struct")
     if container.get("name") != f"{topic}.Value":
         _raise(f"{description} has an unexpected row schema name")
     expected = tuple(ROW_FIELD_TYPES[table])
-    fields = _schema_fields(container.get("fields"), expected, f"{description}.fields")
-    for name, field_type in ROW_FIELD_TYPES[table].items():
+    raw_fields = container.get("fields")
+    has_phone = (
+        table == "customers"
+        and isinstance(raw_fields, list)
+        and len(raw_fields) == len(expected) + 1
+        and isinstance(raw_fields[-1], dict)
+        and raw_fields[-1].get("field") == "phone"
+    )
+    if has_phone:
+        if not customers_phone_enabled:
+            _raise("customers.phone requires SQLite migration 0002_customers_phone")
+        expected = (*expected, "phone")
+    fields = _schema_fields(raw_fields, expected, f"{description}.fields")
+    field_types = dict(ROW_FIELD_TYPES[table])
+    if has_phone:
+        field_types["phone"] = "string"
+    for name, field_type in field_types.items():
         field = fields[name]
-        if field.get("optional") is not False:
-            _raise(f"{description}.{name} must be non-optional")
+        expected_optional = name == "phone"
+        if field.get("optional") is not expected_optional:
+            requirement = "optional" if expected_optional else "non-optional"
+            _raise(f"{description}.{name} must be {requirement}")
         if field_type == "decimal":
             _validate_basic_field(field, "bytes", f"{description}.{name}")
             if field.get("name") != "org.apache.kafka.connect.data.Decimal":
@@ -366,6 +389,8 @@ def _validate_schema(
     table: str,
     key: dict[str, Any],
     value: dict[str, Any],
+    *,
+    customers_phone_enabled: bool,
 ) -> dict[str, dict[str, Any]]:
     _require_exact_names(key, {"schema", "payload"}, "key")
     key_schema = _require_object(key.get("schema"), "key.schema")
@@ -393,10 +418,18 @@ def _validate_schema(
         value_schema.get("fields"), ENVELOPE_FIELD_ORDER, "value.schema.fields"
     )
     before_fields = _validate_row_schema(
-        table, topic, envelope["before"], "value.schema.before"
+        table,
+        topic,
+        envelope["before"],
+        "value.schema.before",
+        customers_phone_enabled=customers_phone_enabled,
     )
     after_fields = _validate_row_schema(
-        table, topic, envelope["after"], "value.schema.after"
+        table,
+        topic,
+        envelope["after"],
+        "value.schema.after",
+        customers_phone_enabled=customers_phone_enabled,
     )
     if before_fields != after_fields:
         _raise("before and after row schemas differ")
@@ -447,11 +480,16 @@ def _normalize_row(
     entity_id: int,
 ) -> dict[str, Any]:
     values = _require_object(row, "value.payload.after")
-    _require_exact_names(values, set(ROW_FIELD_TYPES[table]), "value.payload.after")
+    _require_exact_names(values, set(row_schema), "value.payload.after")
+    field_types = dict(ROW_FIELD_TYPES[table])
+    if "phone" in row_schema:
+        field_types["phone"] = "string"
     normalized: dict[str, Any] = {}
-    for name, field_type in ROW_FIELD_TYPES[table].items():
+    for name, field_type in field_types.items():
         value = values[name]
-        if field_type == "int64":
+        if name == "phone" and value is None:
+            normalized[name] = None
+        elif field_type == "int64":
             parsed = _require_int(value, f"value.payload.after.{name}", minimum=1)
             assert parsed is not None
             normalized[name] = parsed
@@ -479,8 +517,11 @@ def _validate_before_row(
     entity_id: int,
 ) -> None:
     values = _require_object(row, "value.payload.before")
-    _require_exact_names(values, set(ROW_FIELD_TYPES[table]), "value.payload.before")
-    for name, field_type in ROW_FIELD_TYPES[table].items():
+    _require_exact_names(values, set(row_schema), "value.payload.before")
+    field_types = dict(ROW_FIELD_TYPES[table])
+    if "phone" in row_schema:
+        field_types["phone"] = "string"
+    for name, field_type in field_types.items():
         value = values[name]
         if value is None:
             if name == "id":
@@ -561,7 +602,12 @@ def _table_for_topic(topic: str, generation: str) -> str:
     return table
 
 
-def _parse_record(record: KafkaRecord, generation: str) -> _ParsedRecord:
+def _parse_record(
+    record: KafkaRecord,
+    generation: str,
+    *,
+    customers_phone_enabled: bool,
+) -> _ParsedRecord:
     table = _table_for_topic(record.topic, generation)
     key, entity_id = _parse_key(record.topic, record.key)
     if record.value is None:
@@ -582,7 +628,13 @@ def _parse_record(record: KafkaRecord, generation: str) -> _ParsedRecord:
         )
 
     value = _json_object(record.value, "value")
-    row_schema = _validate_schema(record.topic, table, key, value)
+    row_schema = _validate_schema(
+        record.topic,
+        table,
+        key,
+        value,
+        customers_phone_enabled=customers_phone_enabled,
+    )
     payload = _require_object(value.get("payload"), "value.payload")
     _require_exact_names(payload, set(ENVELOPE_FIELD_ORDER), "value.payload")
     operation = payload.get("op")
@@ -825,6 +877,8 @@ def _write_projection(
     if parsed.row is None:
         raise RuntimeError("non-delete event has no projection row")
     columns = PROJECTION_COLUMNS[parsed.table]
+    if parsed.table == "customers" and "phone" in parsed.row:
+        columns = (*columns, "phone")
     insert_columns = ("generation", *columns)
     placeholders = ", ".join("?" for _ in insert_columns)
     updates = ", ".join(
@@ -960,7 +1014,23 @@ def process_record(
             return ProcessResult(duplicate[0], True, None)
 
         _validate_record_metadata(record)
-        parsed = _parse_record(record, generation)
+        phone_migration = connection.execute(
+            "SELECT 1 FROM schema_migrations "
+            "WHERE version = 2 AND name = 'customers_phone'"
+        ).fetchone()
+        phone_column = any(
+            row[1] == "phone"
+            for row in connection.execute("PRAGMA table_info(customers_current)")
+        )
+        if (phone_migration is not None) != phone_column:
+            raise RuntimeError(
+                "SQLite customers.phone column and migration history are inconsistent"
+            )
+        parsed = _parse_record(
+            record,
+            generation,
+            customers_phone_enabled=phone_column,
+        )
         if parsed.token is None:
             _insert_raw(connection, generation, record, parsed, "tombstone", timestamp)
             connection.execute("COMMIT")

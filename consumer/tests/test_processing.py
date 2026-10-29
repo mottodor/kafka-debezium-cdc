@@ -313,6 +313,20 @@ def decoded_value(record: KafkaRecord) -> dict[str, Any]:
     return json.loads(record.value)
 
 
+def with_customers_phone(record: KafkaRecord, phone: str | None) -> KafkaRecord:
+    value = decoded_value(record)
+    phone_field = {"field": "phone", "type": "string", "optional": True}
+    value["schema"]["fields"][0]["fields"].append(copy.deepcopy(phone_field))
+    value["schema"]["fields"][1]["fields"].append(copy.deepcopy(phone_field))
+    before = value["payload"]["before"]
+    after = value["payload"]["after"]
+    if before is not None:
+        before["phone"] = None
+    if after is not None:
+        after["phone"] = phone
+    return replace_value(record, value)
+
+
 class ProcessingTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -683,7 +697,7 @@ class ProcessingTests(unittest.TestCase):
             (unknown, "unsupported Debezium operation"),
             (incremental, "incremental snapshots are not supported"),
             (missing_order, "fields differ"),
-            (unsupported, "unexpected field order"),
+            (unsupported, "customers.phone requires SQLite migration"),
         )
         for record, expected_message in cases:
             with self.subTest(offset=record.offset):
@@ -704,6 +718,82 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(
             self.connection.execute("SELECT count(*) FROM customers_current").fetchone(),
             (0,),
+        )
+
+    def test_customers_phone_stops_before_migration_and_replays_same_coordinate(self) -> None:
+        existing = make_record(row_id=2, offset=45)
+        self.process(existing)
+        changed = with_customers_phone(
+            make_record(
+                row_id=1,
+                offset=46,
+                operation="u",
+                lsn=200,
+                variant="new",
+            ),
+            "+15550000001",
+        )
+
+        with self.assertRaisesRegex(
+            RecordValidationError,
+            "customers.phone requires SQLite migration 0002_customers_phone",
+        ):
+            self.process(changed)
+        self.assertIsNone(
+            self.connection.execute(
+                "SELECT offset FROM raw_events WHERE offset = 46"
+            ).fetchone()
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT error_class, attempt_count, message_value "
+                "FROM ingestion_errors WHERE offset = 46"
+            ).fetchone(),
+            ("RecordValidationError", 1, changed.value),
+        )
+
+        self.assertEqual(
+            migrate(self.database, "g001", target_version=2),
+            2,
+        )
+        result = self.process(changed)
+        self.assertEqual((result.status, result.duplicate), ("applied", False))
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT topic, partition, offset, processing_status "
+                "FROM raw_events WHERE offset = 46"
+            ).fetchone(),
+            (changed.topic, changed.partition, changed.offset, "applied"),
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT full_name, status, phone FROM customers_current WHERE id = 1"
+            ).fetchone(),
+            ("New Name", "inactive", "+15550000001"),
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT phone FROM customers_current WHERE id = 2"
+            ).fetchone(),
+            (None,),
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT attempt_count FROM ingestion_errors WHERE offset = 46"
+            ).fetchone(),
+            (1,),
+        )
+
+        nullable = with_customers_phone(
+            make_record(row_id=3, offset=47, lsn=300),
+            None,
+        )
+        self.process(nullable)
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT phone FROM customers_current WHERE id = 3"
+            ).fetchone(),
+            (None,),
         )
 
     def test_oversized_before_int64_is_a_durable_validation_error(self) -> None:

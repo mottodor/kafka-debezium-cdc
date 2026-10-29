@@ -157,6 +157,14 @@ class RunnerTests(unittest.TestCase):
             "${CDC_FAULT_AFTER_SQLITE_COMMIT_AT:-}\n",
             consumer_block,
         )
+        lab_text = (PROJECT_ROOT / "scripts" / "lab").read_text()
+        self.assertIn("scripts/lab migrate g001", lab_text)
+        self.assertIn('[[ "$(service_state consumer)" != "running" ]]', lab_text)
+        self.assertIn("--network none", lab_text)
+        self.assertIn("--target-version 2", lab_text)
+        runner_text = (SOURCE_ROOT / "cdc_consumer" / "runner.py").read_text()
+        self.assertIn("BASE_SCHEMA_VERSION = 1", runner_text)
+        self.assertIn("target_version=BASE_SCHEMA_VERSION", runner_text)
 
     def setUp(self) -> None:
         temporary_directory = tempfile.TemporaryDirectory()

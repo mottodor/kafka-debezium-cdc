@@ -12,6 +12,7 @@ Usage:
   scripts/lab pull
   scripts/lab up
   scripts/lab bootstrap g001
+  scripts/lab migrate g001
   scripts/lab status g001
   scripts/lab lag g001
   scripts/lab stop
@@ -19,6 +20,7 @@ Usage:
   scripts/lab destroy g001 --confirm g001
 
 Network/dependency action: pull
+Manual schema action: migrate (requires stopped consumer)
 Destructive action: destroy (requires exact generation confirmation)
 Read-only actions: preflight, status, lag
 EOF
@@ -298,6 +300,29 @@ verify_consumer_volume_scope() {
   printf '%s\n' "$volume"
 }
 
+migrate_sink() {
+  (($# == 1)) || fail "usage: scripts/lab migrate g001" 64
+  local generation="$1"
+  local volume
+  require_generation_contract "$generation"
+  [[ "$(service_state consumer)" != "running" ]] \
+    || fail "stop the consumer before applying the SQLite schema migration" 65
+  docker image inspect "$CONSUMER_IMAGE" >/dev/null 2>&1 \
+    || fail "consumer image is unavailable; run scripts/lab pull" 69
+  volume="$(verify_consumer_volume_scope "$generation")"
+  printf 'manual schema action: applying SQLite migration target=2 generation=%s\n' \
+    "$generation"
+  docker run --rm \
+    --network none \
+    --read-only \
+    --volume "$volume:/data" \
+    "$CONSUMER_IMAGE" \
+    python -m cdc_consumer.migrations \
+      --database "/data/cdc-${generation}.sqlite3" \
+      --generation "$generation" \
+      --target-version 2
+}
+
 sink_event_age() {
   local generation="$1"
   local volume
@@ -552,6 +577,7 @@ main() {
     pull) pull_images "$@" ;;
     up) up_services "$@" ;;
     bootstrap) bootstrap_generation "$@" ;;
+    migrate) migrate_sink "$@" ;;
     status) status_generation "$@" ;;
     lag) lag_generation "$@" ;;
     stop) stop_services "$@" ;;

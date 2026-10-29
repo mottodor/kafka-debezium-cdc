@@ -238,10 +238,19 @@ def apply_migrations(
     connection: sqlite3.Connection,
     migrations: Sequence[Migration],
     generation: str,
+    *,
+    target_version: int | None = None,
 ) -> int:
     migrations = tuple(migrations)
     _validate_migration_set(migrations)
     _validate_generation(generation)
+    if target_version is None:
+        target_version = migrations[-1].version
+    target_version = _parse_integer(target_version, "target migration version")
+    if not 1 <= target_version <= migrations[-1].version:
+        raise MigrationError(
+            f"target migration version must be between 1 and {migrations[-1].version}"
+        )
     applied = _applied_migrations(connection)
     _validate_applied(applied, migrations)
     existing_generation = _existing_generation(connection)
@@ -253,7 +262,7 @@ def apply_migrations(
             f"expected {generation}, found {existing_generation}"
         )
     for migration in migrations:
-        if migration.version not in applied:
+        if migration.version <= target_version and migration.version not in applied:
             _apply_one(
                 connection,
                 migration,
@@ -261,14 +270,25 @@ def apply_migrations(
             )
     if _existing_generation(connection) != generation:
         raise MigrationError("SQLite sink generation binding was not established")
-    return migrations[-1].version
+    applied_after = _applied_migrations(connection)
+    return max(applied_after)
 
 
-def migrate(database_path: str | Path, generation: str) -> int:
+def migrate(
+    database_path: str | Path,
+    generation: str,
+    *,
+    target_version: int = 1,
+) -> int:
     migrations = load_migrations()
     connection = open_database(database_path)
     try:
-        return apply_migrations(connection, migrations, generation)
+        return apply_migrations(
+            connection,
+            migrations,
+            generation,
+            target_version=target_version,
+        )
     finally:
         connection.close()
 
@@ -277,13 +297,23 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", required=True, help="SQLite sink path")
     parser.add_argument("--generation", required=True, help="CDC generation ID (gNNN)")
+    parser.add_argument(
+        "--target-version",
+        type=int,
+        default=1,
+        help="highest migration version to apply (default: 1)",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     try:
-        version = migrate(args.database, args.generation)
+        version = migrate(
+            args.database,
+            args.generation,
+            target_version=args.target_version,
+        )
     except (MigrationError, sqlite3.DatabaseError, OSError) as error:
         raise SystemExit(f"SQLite migration failed: {error}") from error
     print(
@@ -292,6 +322,7 @@ def main() -> None:
                 "database": str(Path(args.database)),
                 "generation": args.generation,
                 "schema_version": version,
+                "target_version": args.target_version,
             },
             sort_keys=True,
         )

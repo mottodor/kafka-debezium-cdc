@@ -56,6 +56,27 @@ BEGIN
         'payments.provider_ref:text:NO:NO:-',
         'payments.created_at:timestamptz:NO:NO:-',
         'payments.updated_at:timestamptz:NO:NO:-'
+    ]::TEXT[] AND actual_columns IS DISTINCT FROM ARRAY[
+        'customers.id:int8:NO:YES:ALWAYS',
+        'customers.email:text:NO:NO:-',
+        'customers.full_name:text:NO:NO:-',
+        'customers.status:text:NO:NO:-',
+        'customers.created_at:timestamptz:NO:NO:-',
+        'customers.updated_at:timestamptz:NO:NO:-',
+        'customers.phone:text:YES:NO:-',
+        'orders.id:int8:NO:YES:ALWAYS',
+        'orders.customer_id:int8:NO:NO:-',
+        'orders.status:text:NO:NO:-',
+        'orders.total_amount:numeric:NO:NO:-',
+        'orders.created_at:timestamptz:NO:NO:-',
+        'orders.updated_at:timestamptz:NO:NO:-',
+        'payments.id:int8:NO:YES:ALWAYS',
+        'payments.order_id:int8:NO:NO:-',
+        'payments.status:text:NO:NO:-',
+        'payments.amount:numeric:NO:NO:-',
+        'payments.provider_ref:text:NO:NO:-',
+        'payments.created_at:timestamptz:NO:NO:-',
+        'payments.updated_at:timestamptz:NO:NO:-'
     ]::TEXT[] THEN
         RAISE EXCEPTION 'source column contract mismatch: %', actual_columns;
     END IF;

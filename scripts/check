@@ -42,6 +42,7 @@ unit_checks() {
     --tmpfs /tmp:size=64m \
     --volume "$PROJECT_ROOT/consumer/src:/opt/cdc/consumer/src:ro" \
     --volume "$PROJECT_ROOT/consumer/tests:/opt/cdc/consumer/tests:ro" \
+    --volume "$PROJECT_ROOT/scripts:/opt/cdc/scripts:ro" \
     --volume "$COMPOSE_FILE:/opt/cdc/compose.yaml:ro" \
     --env PYTHONPATH=/opt/cdc/consumer/src \
     --workdir /opt/cdc \

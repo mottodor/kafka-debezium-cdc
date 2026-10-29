@@ -33,6 +33,9 @@ class FaultAfterDurableCommit(RunnerError):
     """Controlled AC-004 stop after SQLite commit and before Kafka commit."""
 
 
+BASE_SCHEMA_VERSION = 1
+
+
 class KafkaMessage(Protocol):
     def topic(self) -> str | None:
         raise AssertionError("protocol method")
@@ -342,7 +345,11 @@ def main(environment: Mapping[str, str] | None = None) -> int:
     connection: sqlite3.Connection | None = None
     try:
         config = RunnerConfig.from_environment(environment)
-        migrate(config.sqlite_path, config.generation)
+        migrate(
+            config.sqlite_path,
+            config.generation,
+            target_version=BASE_SCHEMA_VERSION,
+        )
         connection = open_database(config.sqlite_path)
         consumer = create_kafka_consumer(config)
         run_consumer(consumer, connection, config)

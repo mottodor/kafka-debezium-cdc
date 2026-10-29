@@ -883,3 +883,83 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: E-07
+
+- Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-07`; fixtures/evidence requirements — разделы 7.2–7.3
+- Status: BLOCKED
+- Updated: 2026-10-29T22:58:50+03:00
+- Baseline HEAD: `76e239eb2fe31be8b8edd90801331cc5b2a895cd`
+
+### Progress
+- Implemented: выполнен PRECHECK; подтверждены clean baseline и исходное состояние сервисов `initial_stopped` с сохранёнными 8 volumes/network. Product/test code не изменялся.
+- Remaining: реализовать обязательные зависимости `R-06`, `R-07`, `R-08`, затем добавить полный E-07 набор unit/integration/acceptance fixtures и redacted evidence format, выполнить проверки и независимый review.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.2, `E-07`, критерий проверки | NOT_RUN | PRECHECK остановил реализацию: строка E-07 явно зависит от `R-01–R-08`, но текущий HEAD содержит только SQLite migration `0001_initial.sql`; `scripts/lab new-generation` fail-closed до R-08, а `scripts/check acceptance` fail-closed до E-07/R-09. Непустой финальный набор acceptance fixtures и deliberate failure нельзя достоверно проверить против отсутствующих R-06–R-08 contracts. |
+
+### Issues
+#### E-07/B01
+- State: OPEN
+- Category: SPEC
+- Affects: `docs/bootstrap.md` §6.2 `E-07`; обязательные gates `EVIDENCE_GATE` и `FRESH_READ_ONLY_REVIEW`
+- Problem: запрошенная задача начата до её утверждённых зависимостей `R-06`, `R-07`, `R-08`; реализация полного E-07 сейчас потребовала бы тестировать отсутствующее поведение либо самовольно сузить acceptance scope.
+- Evidence: в repository отсутствует schema migration v2 для `customers.phone`; `scripts/lib/common.sh` и `scripts/lab` явно блокируют generation tooling до R-08; `scripts/check` явно блокирует acceptance orchestration. Git baseline до status record был clean на HEAD `76e239e...`.
+- Unblock: пользователь поручает и завершает отдельные задачи `R-06`, затем `R-07`, затем `R-08`; после их review-ready checkpoints повторно запускается E-07.
+- Resolution: pending
+
+### Review
+- Verdict: NOT_RUN
+- Calls: 0
+- Fix iterations: 0
+- Details: fresh review не запускался, потому что PRECHECK выявил отсутствующие обязательные зависимости до изменения product/test code.
+
+### Next action
+Пользователю поручить реализацию следующей обязательной зависимости `R-06` отдельным запуском implement.
+
+## TASK_ID: R-06
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-06`; behavioral contract — `docs/spec.md` §5.5 и §9, `AC-007`
+- Status: REVIEW_READY
+- Updated: 2026-10-29T23:15:28+03:00
+- Baseline HEAD: `76e239eb2fe31be8b8edd90801331cc5b2a895cd`
+
+### Progress
+- Implemented: добавлены manual target-version SQLite migrations и `0002_customers_phone.sql`; consumer startup остаётся на baseline v1 до явного `scripts/lab migrate g001`; processor принимает nullable `phone` только после согласованной v2 history/column, сохраняет fail-stop до миграции и применяет replay; source verifier принимает exact pre/post schema. Unit/mutation, exact-image и live AC-007 assertions прошли; сервисы возвращены в `initial_stopped`, 8 volumes/network сохранены. Существующая секция E-07 не изменялась.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-06`, наблюдаемый выход | PASS | fast: host 36 tests, exit 0, 0.59 s; exact-image `scripts/check unit`, 36 tests, exit 0, 0.91 s и повтор после network-none source-only image build; 5 targeted mutations обнаружены; `py_compile`, shell syntax, `git diff --check`, LSP 0 findings. standard: `scripts/lab migrate g001` idempotently подтвердил schema version 2; running-consumer guard дал expected exit 65; post-change source verifier прошёл. |
+| `docs/spec.md` §9, `AC-007` | PASS | acceptance: source ALTER+UPDATE создал `cdc.g001.public.customers:2:4`; до migration consumer exit 1 с `RecordValidationError`, raw отсутствовал, projection/schema v1 не изменились, committed offset остался 4 при log-end 5. После manual v2 migration тот же coordinate обработан как `applied`, committed offset стал 5/lag 0; `customer1.phone=+15550000001`, `customer2.phone=NULL`; final source/sink parity и schema history `(1, initial),(2, customers_phone)` подтверждены. |
+
+### Issues
+#### R-06/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; runtime baseline lag assertion
+- Problem: первый runtime harness ошибочно потребовал numeric `LAG=0` для пустых Kafka partitions, где Kafka CLI корректно выводит `CURRENT-OFFSET=-`, `LOG-END-OFFSET=0`, `LAG=-`.
+- Evidence: core services и consumer успешно запущены; group output показывает шесть active partitions с lag `0` и три пустые partitions с `- / 0 / -`, после чего harness завершился exit 1 до schema-change exercise.
+- Unblock: считать пустую partition с log-end `0` нулевым backlog, повторить baseline assertion, остановить consumer и продолжить AC-007.
+- Resolution: исправленный assertion принял только numeric lag `0` либо exact empty state `- / 0 / -`; baseline прошёл, consumer остановлен, sink подтверждён на schema version 1 без `phone`.
+
+#### R-06/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-007`; pre-migration sink assertions
+- Problem: первый read-only sink assertion передал Python program в `docker run ... python -` без interactive stdin, поэтому container завершился exit 0 без выполнения assertions и без output.
+- Evidence: expected consumer fail-stop и group offset `4`/log-end `5`/lag `1` подтверждены, но секция `SINK AFTER EXPECTED FAIL` осталась пустой; первая исправленная попытка также потребовала SQLite URI `immutable=1` для read-only volume.
+- Unblock: повторить read-only probe с `docker run --interactive` и подтвердить raw absence, durable error, unchanged projection и schema version 1.
+- Resolution: interactive immutable read-only probe прошёл: coordinate `customers:2:4` отсутствует в raw, durable error имеет attempt_count 1, projection неизменна, schema version 1 и `phone` column отсутствует.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: fresh read-only reviewer проверил полный tracked/untracked diff, `docs/status.md`, live evidence и сохранность E-07; blockers отсутствуют, `VERDICT OK`. IMPROVEMENT/P2: добавить отдельный regression для old-schema customer record после v2; текущая реализация статически корректна, finding неблокирующий.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.

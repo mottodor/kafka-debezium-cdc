@@ -91,6 +91,53 @@ class MigrationTests(unittest.TestCase):
         )
         self.assertEqual(projection_foreign_keys, 0)
 
+    def test_customers_phone_migration_is_manual_idempotent_and_non_destructive(self) -> None:
+        self.assertEqual(migrate(self.database, "g001"), 1)
+        connection = self.connect()
+        connection.execute(
+            "INSERT INTO customers_current "
+            "(id, generation, email, full_name, status, created_at, updated_at) "
+            "VALUES (1, 'g001', 'alice@example.test', 'Alice Adams', 'active', "
+            "'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
+        )
+        connection.commit()
+        self.assertNotIn(
+            "phone",
+            {row[1] for row in connection.execute("PRAGMA table_info(customers_current)")},
+        )
+
+        self.assertEqual(
+            migrate(self.database, "g001", target_version=2),
+            2,
+        )
+        self.assertEqual(
+            migrate(self.database, "g001", target_version=2),
+            2,
+        )
+        self.assertEqual(migrate(self.database, "g001"), 2)
+        columns = {
+            row[1]: (row[2], row[3])
+            for row in connection.execute("PRAGMA table_info(customers_current)")
+        }
+        self.assertEqual(columns["phone"], ("TEXT", 0))
+        self.assertEqual(
+            connection.execute(
+                "SELECT phone FROM customers_current WHERE id = 1"
+            ).fetchone(),
+            (None,),
+        )
+        self.assertEqual(
+            connection.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall(),
+            [(1, "initial"), (2, "customers_phone")],
+        )
+
+        for target in (0, 3):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(MigrationError, "target migration version"):
+                    migrate(self.database, "g001", target_version=target)
+
     def test_raw_archive_preserves_blob_headers_and_rejects_duplicate_coordinate(self) -> None:
         migrate(self.database, "g001")
         connection = self.connect()
@@ -415,7 +462,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_failed_migration_rolls_back_ddl_and_version_record(self) -> None:
         migrate(self.database, "g001")
-        migrations = load_migrations()
+        migrations = load_migrations()[:1]
         broken = Migration(
             version=2,
             name="broken_probe",
@@ -471,7 +518,7 @@ class MigrationTests(unittest.TestCase):
         connection = open_database(self.database)
         self.addCleanup(connection.close)
         with self.assertRaisesRegex(MigrationError, "different generation"):
-            apply_migrations(connection, (*load_migrations(), pending), "g002")
+            apply_migrations(connection, (*load_migrations()[:1], pending), "g002")
         self.assertIsNone(
             connection.execute(
                 "SELECT name FROM sqlite_schema WHERE name = 'pending_leak'"
