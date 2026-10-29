@@ -1,0 +1,565 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=scripts/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/lab preflight
+  scripts/lab pull
+  scripts/lab up
+  scripts/lab bootstrap g001
+  scripts/lab status g001
+  scripts/lab lag g001
+  scripts/lab stop
+  scripts/lab new-generation g002
+  scripts/lab destroy g001 --confirm g001
+
+Network/dependency action: pull
+Destructive action: destroy (requires exact generation confirmation)
+Read-only actions: preflight, status, lag
+EOF
+}
+
+preflight() {
+  require_no_arguments "$@"
+  require_command docker
+  require_command awk
+  require_command df
+  docker compose version >/dev/null 2>&1 \
+    || fail "Docker Compose v2 is unavailable" 69
+  require_generation_contract "$DEFAULT_GENERATION"
+  require_local_secrets
+  compose_config_check
+
+  local info server_version architecture cpus memory_bytes docker_root operating_system
+  local memory_gib available_kib available_gib ref storage_path
+  info="$(docker info --format '{{.ServerVersion}}|{{.Architecture}}|{{.NCPU}}|{{.MemTotal}}|{{.DockerRootDir}}|{{.OperatingSystem}}' 2>/dev/null)" \
+    || fail "Docker daemon is unavailable" 69
+  IFS='|' read -r server_version architecture cpus memory_bytes docker_root operating_system <<< "$info"
+  [[ "$cpus" =~ ^[0-9]+$ && "$cpus" -ge 6 ]] \
+    || fail "Docker provides fewer than the 6 CPUs required by configured service limits" 69
+  [[ "$memory_bytes" =~ ^[0-9]+$ ]] \
+    || fail "Docker reported an invalid memory capacity" 69
+  memory_gib=$((memory_bytes / 1024 / 1024 / 1024))
+  ((memory_bytes >= 8 * 1024 * 1024 * 1024)) \
+    || fail "Docker provides less than 8 GiB required by configured service limits" 69
+  storage_path="${CDC_DOCKER_STORAGE_PATH:-}"
+  if [[ -z "$storage_path" && -n "$docker_root" && -d "$docker_root" ]]; then
+    storage_path="$docker_root"
+  elif [[ -z "$storage_path" && "$operating_system" == "Docker Desktop" \
+    && -d /mnt/wsl/docker-desktop ]]; then
+    storage_path=/mnt/wsl/docker-desktop
+  fi
+  [[ -n "$storage_path" && -d "$storage_path" ]] \
+    || fail "cannot inspect Docker storage read-only; set CDC_DOCKER_STORAGE_PATH to an accessible path on the Docker storage filesystem" 69
+  available_kib="$(df -Pk "$storage_path" | awk 'NR == 2 {print $4}')"
+  [[ "$available_kib" =~ ^[0-9]+$ ]] \
+    || fail "cannot determine free Docker storage" 69
+  available_gib=$((available_kib / 1024 / 1024))
+  ((available_kib >= 5 * 1024 * 1024)) \
+    || fail "Docker storage has less than the required 5 GiB free" 69
+
+  printf 'docker server=%s architecture=%s cpus=%s memory_gib=%s storage_free_gib=%s\n' \
+    "$server_version" "$architecture" "$cpus" "$memory_gib" "$available_gib"
+  printf 'compose project=%s generation=%s config=valid secrets=present\n' \
+    "$COMPOSE_PROJECT" "$DEFAULT_GENERATION"
+
+  for ref in \
+    'postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60' \
+    'quay.io/debezium/kafka:3.6.3.Final@sha256:c8af47ccb718e5f17cba0493142079f38ed18df3615200f5ae6a6aa21c49c658' \
+    'quay.io/debezium/connect:3.6.3.Final@sha256:47f266af35d478b646db2e2e4603d21e56861151ab946e879b38edd5b533b6a6' \
+    "$CONSUMER_IMAGE"; do
+    if docker image inspect "$ref" >/dev/null 2>&1; then
+      printf 'image cached: %s\n' "$ref"
+    else
+      printf 'image not cached: %s (run scripts/lab pull)\n' "$ref"
+    fi
+  done
+}
+
+pull_images() {
+  require_no_arguments "$@"
+  require_command docker
+  require_generation_contract "$DEFAULT_GENERATION"
+  require_local_secrets
+  compose_config_check
+  printf 'network action: pulling exact digest-pinned service images\n'
+  compose pull postgres kafka connect
+  printf 'network/dependency action: building %s from the exact pinned Python base and requirements\n' \
+    "$CONSUMER_IMAGE"
+  compose build --pull consumer
+}
+
+up_services() {
+  require_no_arguments "$@"
+  require_command docker
+  compose_config_check
+  printf 'starting core services without pull or build\n'
+  compose up --detach --wait --pull never --no-build postgres kafka connect
+}
+
+connector_registration_state() {
+  compose exec --no-TTY connect python3 - <<'PY'
+import os
+from urllib.error import HTTPError
+from urllib.parse import quote
+from urllib.request import ProxyHandler, build_opener
+
+name = quote(os.environ["DEBEZIUM_CONNECTOR_NAME"], safe="")
+opener = build_opener(ProxyHandler({}))
+try:
+    with opener.open(f"http://127.0.0.1:8083/connectors/{name}/config", timeout=10):
+        raise SystemExit(0)
+except HTTPError as error:
+    if error.code == 404:
+        raise SystemExit(10)
+    raise
+PY
+}
+
+verify_existing_postgres_contract() {
+  compose exec --no-TTY postgres psql \
+    --username cdc_admin \
+    --dbname cdc_lab \
+    --no-psqlrc \
+    --set ON_ERROR_STOP=1 \
+    --file /opt/cdc/postgres/checks/verify-source-contract.sql
+
+  compose exec --no-TTY postgres psql \
+    --username cdc_admin \
+    --dbname cdc_lab \
+    --no-psqlrc \
+    --set ON_ERROR_STOP=1 <<'SQL'
+DO $$
+BEGIN
+    IF current_setting('server_version_num') <> '160013'
+       OR current_setting('wal_level') <> 'logical'
+       OR pg_size_bytes(current_setting('max_slot_wal_keep_size')) <> 1073741824 THEN
+        RAISE EXCEPTION 'PostgreSQL runtime configuration mismatch';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_replication_slots
+        WHERE slot_name = 'postgres_cdc_g001'
+          AND plugin = 'pgoutput'
+          AND database = current_database()
+          AND wal_status <> 'lost'
+    ) THEN
+        RAISE EXCEPTION 'replication slot contract mismatch';
+    END IF;
+END;
+$$;
+SQL
+}
+
+bootstrap_generation() {
+  (($# == 1)) || fail "usage: scripts/lab bootstrap g001" 64
+  local generation="$1"
+  local registration_state
+  require_generation_contract "$generation"
+  require_running_service postgres
+  require_running_service kafka
+  require_running_service connect
+
+  set +e
+  connector_registration_state
+  registration_state=$?
+  set -e
+  case "$registration_state" in
+    0)
+      printf 'verifying existing PostgreSQL runtime/grant/publication/slot contract\n'
+      verify_existing_postgres_contract
+      ;;
+    10)
+      printf 'verifying initial PostgreSQL bootstrap, seed and least-privilege access\n'
+      compose exec --no-TTY postgres /opt/cdc/postgres/checks/verify-access.sh
+      ;;
+    *)
+      fail "cannot determine existing connector registration state" 69
+      ;;
+  esac
+  printf 'creating or verifying generation-scoped Kafka topics\n'
+  compose exec --no-TTY kafka /opt/cdc/kafka/bootstrap-topics.sh
+  printf 'registering or verifying generation-scoped Debezium connector\n'
+  compose exec --no-TTY connect python3 /opt/cdc/connect/register-connector.py
+
+  unset CDC_MAX_MESSAGES CDC_FAULT_AFTER_SQLITE_COMMIT_AT
+  printf 'starting consumer explicitly without pull or build\n'
+  compose up --detach --pull never --no-build --force-recreate consumer
+  wait_for_service_state consumer running 30
+  printf 'bootstrap complete generation=%s\n' "$generation"
+}
+
+connector_status() {
+  compose exec --no-TTY connect python3 - <<'PY'
+import json
+import os
+import sys
+from urllib.request import ProxyHandler, build_opener
+from urllib.parse import quote
+
+name = os.environ["DEBEZIUM_CONNECTOR_NAME"]
+opener = build_opener(ProxyHandler({}))
+with opener.open(
+    f"http://127.0.0.1:8083/connectors/{quote(name, safe='')}/status", timeout=10
+) as response:
+    payload = json.load(response)
+connector = payload.get("connector", {})
+tasks = payload.get("tasks", [])
+if connector.get("state") != "RUNNING" or len(tasks) != 1 or tasks[0].get("state") != "RUNNING":
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+    raise SystemExit("connector or task is not RUNNING")
+print(json.dumps(payload, indent=2, sort_keys=True))
+PY
+}
+
+sink_status() {
+  compose exec --no-TTY consumer python - <<'PY'
+import json
+import os
+import sqlite3
+
+path = os.environ["SQLITE_SINK_PATH"]
+connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+try:
+    generation = connection.execute(
+        "SELECT generation FROM sink_metadata WHERE singleton = 1"
+    ).fetchone()
+    counts = {
+        table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        for table in (
+            "raw_events",
+            "ingestion_errors",
+            "customers_current",
+            "orders_current",
+            "payments_current",
+        )
+    }
+finally:
+    connection.close()
+if generation != (os.environ["CDC_GENERATION"],):
+    raise SystemExit("SQLite sink generation does not match runtime generation")
+print(json.dumps({"generation": generation[0], "counts": counts}, sort_keys=True))
+PY
+}
+
+event_age_program() {
+  cat <<'PY'
+import os
+import sqlite3
+
+connection = sqlite3.connect(
+    f"file:{os.environ['SQLITE_SINK_PATH']}?mode=ro", uri=True
+)
+try:
+    row = connection.execute(
+        """
+        SELECT
+          topic,
+          "partition",
+          "offset",
+          CAST(
+            (julianday(durable_committed_at) - 2440587.5) * 86400000
+            - source_timestamp_ms
+            AS INTEGER
+          ) AS durable_event_age_ms
+        FROM raw_events
+        WHERE source_timestamp_ms IS NOT NULL
+        ORDER BY durable_committed_at DESC, topic, "partition", "offset"
+        LIMIT 1
+        """
+    ).fetchone()
+finally:
+    connection.close()
+if row is None:
+    raise SystemExit("no durable event with source timestamp is available")
+print(
+    f"topic={row[0]} partition={row[1]} offset={row[2]} "
+    f"durable_event_age_ms={row[3]}"
+)
+PY
+}
+
+verify_consumer_volume_scope() {
+  local generation="$1"
+  local volume="${COMPOSE_PROJECT}_consumer-data"
+  local project_label generation_label
+  docker volume inspect "$volume" >/dev/null 2>&1 \
+    || fail "consumer sink volume is unavailable: $volume" 69
+  project_label="$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$volume")"
+  generation_label="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.generation"}}' "$volume")"
+  [[ "$project_label" == "$COMPOSE_PROJECT" && "$generation_label" == "$generation" ]] \
+    || fail "consumer sink volume is outside exact generation scope" 65
+  printf '%s\n' "$volume"
+}
+
+sink_event_age() {
+  local generation="$1"
+  local volume
+  if [[ "$(service_state consumer)" == "running" ]]; then
+    event_age_program | compose exec --no-TTY consumer python -
+    return
+  fi
+
+  docker image inspect "$CONSUMER_IMAGE" >/dev/null 2>&1 \
+    || fail "consumer image is unavailable for read-only sink inspection" 69
+  volume="$(verify_consumer_volume_scope "$generation")"
+  event_age_program | docker run --rm --interactive \
+    --network none \
+    --read-only \
+    --volume "$volume:/data:ro" \
+    --env "SQLITE_SINK_PATH=/data/cdc-${generation}.sqlite3" \
+    "$CONSUMER_IMAGE" \
+    python -
+}
+
+status_generation() {
+  (($# == 1)) || fail "usage: scripts/lab status g001" 64
+  local generation="$1"
+  require_generation_contract "$generation"
+  printf '%s\n' '--- compose services ---'
+  compose ps --all
+  require_running_service postgres
+  require_running_service kafka
+  require_running_service connect
+  require_running_service consumer
+  printf '%s\n' '--- connector ---'
+  connector_status
+  printf '%s\n' '--- table topics ---'
+  local topics expected_topics
+  topics="$(
+    compose exec --no-TTY kafka /kafka/bin/kafka-topics.sh \
+      --bootstrap-server 127.0.0.1:9092 --list \
+      | grep -E "^cdc\\.${generation}\\.public\\.(customers|orders|payments)$" \
+      | sort
+  )"
+  expected_topics="$(
+    printf '%s\n' \
+      "cdc.${generation}.public.customers" \
+      "cdc.${generation}.public.orders" \
+      "cdc.${generation}.public.payments" \
+      | sort
+  )"
+  [[ "$topics" == "$expected_topics" ]] \
+    || fail "table topic set does not match generation contract" 1
+  printf '%s\n' "$topics"
+  printf '%s\n' '--- consumer group ---'
+  compose exec --no-TTY kafka /kafka/bin/kafka-consumer-groups.sh \
+    --bootstrap-server 127.0.0.1:9092 \
+    --describe \
+    --group "sqlite-projector-${generation}"
+  printf '%s\n' '--- SQLite sink ---'
+  sink_status
+}
+
+lag_generation() {
+  (($# == 1)) || fail "usage: scripts/lab lag g001" 64
+  local generation="$1"
+  require_generation_contract "$generation"
+  require_running_service postgres
+  require_running_service kafka
+
+  printf '%s\n' '--- kafka_consumer_group_lag_by_partition ---'
+  compose exec --no-TTY kafka /kafka/bin/kafka-consumer-groups.sh \
+    --bootstrap-server 127.0.0.1:9092 \
+    --describe \
+    --group "sqlite-projector-${generation}"
+
+  printf '%s\n' '--- durable_event_age_ms ---'
+  sink_event_age "$generation"
+
+  printf '%s\n' '--- postgres_replication_slot_retained_wal ---'
+  local slot_line
+  slot_line="$(
+    compose exec --no-TTY postgres bash -Eeuo pipefail -c '
+      psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --no-psqlrc \
+        --tuples-only --no-align --field-separator="|" \
+        --command="SELECT slot_name, wal_status, COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0)::bigint AS retained_wal_bytes, safe_wal_size, CASE WHEN COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0) >= 536870912 THEN '\''WARNING'\'' ELSE '\''OK'\'' END AS threshold_512_mib FROM pg_replication_slots WHERE slot_name = '\''postgres_cdc_g001'\'';"
+    '
+  )"
+  validate_replication_slot_metric "$slot_line" postgres_cdc_g001
+}
+
+stop_services() {
+  require_no_arguments "$@"
+  require_command docker
+  printf 'stopping project services; volumes, network, connector offsets, slot and SQLite sink are preserved\n'
+  compose stop
+}
+
+new_generation() {
+  (($# == 1)) || fail "usage: scripts/lab new-generation g002" 64
+  local generation="$1"
+  validate_generation_name "$generation"
+  [[ "$generation" != "$DEFAULT_GENERATION" ]] \
+    || fail "new generation must not reuse g001" 65
+  [[ ! -e "$(generation_file "$generation")" ]] \
+    || fail "generation metadata already exists: config/generations/$generation.env" 65
+  fail "new-generation is intentionally unavailable until R-08 implements isolated connector/slot/topics/group/sink generation" 69
+}
+
+generation_volume_specs() {
+  printf '%s\n' \
+    "${COMPOSE_PROJECT}_postgres-data|postgres-data" \
+    "${COMPOSE_PROJECT}_kafka-config|kafka-config" \
+    "${COMPOSE_PROJECT}_kafka-data|kafka-data" \
+    "${COMPOSE_PROJECT}_kafka-logs|kafka-logs" \
+    "${COMPOSE_PROJECT}_connect-config|connect-config" \
+    "${COMPOSE_PROJECT}_connect-data|connect-data" \
+    "${COMPOSE_PROJECT}_connect-logs|connect-logs" \
+    "${COMPOSE_PROJECT}_consumer-data|consumer-data"
+}
+
+verify_destroy_scope() {
+  local generation="$1"
+  local resource id project_label generation_label purpose_label volume_spec expected_purpose
+  local container_spec expected_service service_label oneoff_label container_name expected_container_found
+  local expected_network="${COMPOSE_PROJECT}_cdc-lab"
+  local expected_volume_found
+  local -a volumes=() containers=() networks=() expected_volume_specs=()
+  local -a expected_container_specs=(
+    "${COMPOSE_PROJECT}-postgres-1|postgres"
+    "${COMPOSE_PROJECT}-kafka-1|kafka"
+    "${COMPOSE_PROJECT}-connect-1|connect"
+    "${COMPOSE_PROJECT}-consumer-1|consumer"
+  )
+  mapfile -t expected_volume_specs < <(generation_volume_specs)
+
+  for volume_spec in "${expected_volume_specs[@]}"; do
+    resource="${volume_spec%%|*}"
+    expected_purpose="${volume_spec#*|}"
+    docker volume inspect "$resource" >/dev/null 2>&1 \
+      || fail "refusing destroy: expected generation volume is unavailable: $resource" 65
+    project_label="$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$resource")"
+    generation_label="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.generation"}}' "$resource")"
+    purpose_label="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.purpose"}}' "$resource")"
+    [[ "$project_label" == "$COMPOSE_PROJECT" \
+       && "$generation_label" == "$generation" \
+       && "$purpose_label" == "$expected_purpose" ]] \
+      || fail "refusing destroy: volume $resource is outside exact generation scope" 65
+  done
+
+  mapfile -t volumes < <(
+    docker volume ls --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT"
+  )
+  for resource in "${volumes[@]}"; do
+    expected_volume_found=false
+    for volume_spec in "${expected_volume_specs[@]}"; do
+      if [[ "$resource" == "${volume_spec%%|*}" ]]; then
+        expected_volume_found=true
+        break
+      fi
+    done
+    [[ "$expected_volume_found" == true ]] \
+      || fail "refusing destroy: unexpected project-scoped volume $resource" 65
+  done
+
+  for container_spec in "${expected_container_specs[@]}"; do
+    container_name="${container_spec%%|*}"
+    expected_service="${container_spec#*|}"
+    docker inspect "$container_name" >/dev/null 2>&1 \
+      || fail "refusing destroy: expected project container is unavailable: $container_name" 65
+    project_label="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container_name")"
+    service_label="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container_name")"
+    oneoff_label="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.oneoff"}}' "$container_name")"
+    [[ "$project_label" == "$COMPOSE_PROJECT" \
+       && "$service_label" == "$expected_service" \
+       && "$oneoff_label" == False ]] \
+      || fail "refusing destroy: container $container_name is outside exact service scope" 65
+  done
+
+  mapfile -t containers < <(
+    docker ps --all --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT"
+  )
+  ((${#containers[@]} == ${#expected_container_specs[@]})) \
+    || fail "refusing destroy: unexpected project container count" 65
+  for id in "${containers[@]}"; do
+    container_name="$(docker inspect --format '{{.Name}}' "$id")"
+    container_name="${container_name#/}"
+    expected_container_found=false
+    for container_spec in "${expected_container_specs[@]}"; do
+      if [[ "$container_name" == "${container_spec%%|*}" ]]; then
+        expected_container_found=true
+        break
+      fi
+    done
+    [[ "$expected_container_found" == true ]] \
+      || fail "refusing destroy: unexpected project-scoped container $container_name" 65
+  done
+
+  mapfile -t networks < <(
+    docker network ls --quiet --filter "label=com.docker.compose.project=$COMPOSE_PROJECT"
+  )
+  ((${#networks[@]} == 1)) \
+    || fail "refusing destroy: expected one exact project network, found ${#networks[@]}" 65
+  resource="${networks[0]}"
+  [[ "$(docker network inspect --format '{{.Name}}' "$resource")" == "$expected_network" ]] \
+    || fail "refusing destroy: unexpected project network name" 65
+  project_label="$(docker network inspect --format '{{index .Labels "com.docker.compose.project"}}' "$resource")"
+  generation_label="$(docker network inspect --format '{{index .Labels "io.kafka-debezium-cdc.generation"}}' "$resource")"
+  [[ "$project_label" == "$COMPOSE_PROJECT" && "$generation_label" == "$generation" ]] \
+    || fail "refusing destroy: network $expected_network is outside exact generation scope" 65
+}
+
+remove_generation_volumes() {
+  local generation="$1"
+  local resource project_label generation_label purpose_label volume_spec expected_purpose
+  local -a expected_volume_specs=()
+  mapfile -t expected_volume_specs < <(generation_volume_specs)
+
+  for volume_spec in "${expected_volume_specs[@]}"; do
+    resource="${volume_spec%%|*}"
+    expected_purpose="${volume_spec#*|}"
+    docker volume inspect "$resource" >/dev/null 2>&1 \
+      || fail "refusing destroy: expected generation volume disappeared before removal: $resource" 65
+    project_label="$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$resource")"
+    generation_label="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.generation"}}' "$resource")"
+    purpose_label="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.purpose"}}' "$resource")"
+    [[ "$project_label" == "$COMPOSE_PROJECT" \
+       && "$generation_label" == "$generation" \
+       && "$purpose_label" == "$expected_purpose" ]] \
+      || fail "refusing destroy: volume $resource changed scope before removal" 65
+    docker volume rm "$resource" >/dev/null
+  done
+}
+
+destroy_generation() {
+  (($# == 3)) || fail "usage: scripts/lab destroy g001 --confirm g001" 64
+  local generation="$1"
+  local confirmation_flag="$2"
+  local confirmation="$3"
+  require_generation_contract "$generation"
+  [[ "$confirmation_flag" == "--confirm" && "$confirmation" == "$generation" ]] \
+    || fail "destroy requires exact confirmation: scripts/lab destroy $generation --confirm $generation" 64
+  verify_destroy_scope "$generation"
+  printf 'destructive action: removing only Compose project=%s generation=%s containers, network and eight validated named volumes\n' \
+    "$COMPOSE_PROJECT" "$generation"
+  compose down
+  remove_generation_volumes "$generation"
+}
+
+main() {
+  (($# >= 1)) || { usage >&2; exit 64; }
+  local command="$1"
+  shift
+  case "$command" in
+    preflight) preflight "$@" ;;
+    pull) pull_images "$@" ;;
+    up) up_services "$@" ;;
+    bootstrap) bootstrap_generation "$@" ;;
+    status) status_generation "$@" ;;
+    lag) lag_generation "$@" ;;
+    stop) stop_services "$@" ;;
+    new-generation) new_generation "$@" ;;
+    destroy) destroy_generation "$@" ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; fail "unknown lab command: $command" 64 ;;
+  esac
+}
+
+main "$@"

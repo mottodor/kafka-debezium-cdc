@@ -118,6 +118,11 @@ psql_base=(
 PGPASSWORD=$POSTGRES_ADMIN_PASSWORD psql \
   "${psql_base[@]}" \
   --username "$POSTGRES_ADMIN_USER" \
+  --file "$script_dir/verify-source-contract.sql"
+
+PGPASSWORD=$POSTGRES_ADMIN_PASSWORD psql \
+  "${psql_base[@]}" \
+  --username "$POSTGRES_ADMIN_USER" \
   --file "$script_dir/../init/30-verify-bootstrap.sql"
 
 seed_counts=$(

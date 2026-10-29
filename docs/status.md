@@ -686,3 +686,200 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: E-06
+
+- Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-06`; command contract — разделы 4.7 и 7.1
+- Status: REVIEW_READY
+- Updated: 2026-10-29T22:45:44+03:00
+- Baseline HEAD: `c22211a21f299a0fa08599300e3552900ee9eecc`
+
+### Progress
+- Implemented: в текущей status-only попытке PRECHECK подтвердил тот же HEAD и согласованный E-06 diff; code-файлы не менялись после итогового reviewer call 4, protected docs совпадают с approved fingerprints, project services stopped, 8 volumes и network сохранены. Safe command interfaces и shared verifier завершены; B06/B11–B18 закрыты, final evidence применимо.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.2, `E-06`, критерий проверки | PASS | Применимость final evidence подтверждена в текущей status-only попытке: HEAD `c22211a...`, tracked/untracked code scope и SHA-256 пяти E-06 code-файлов зафиксированы; их mtimes предшествуют итоговому reviewer artifact, после него менялся только `docs/status.md`; protected spec/idea fingerprints совпадают, services stopped, 8 volumes/network сохранены. Current fast: shell syntax PASS 4 ms; exact-image Python 3.12.12 suite 34 tests PASS 908 ms; `git diff --check` PASS. Сохранённое final evidence: 43 safety mutations, exact labels для 8 volumes/4 containers, targeted catalog/publication/table-property mutations, live lag с numeric `safe_wal_size`, exact destroy mocks и hostile-env smoke exit 0, 67.60 s. Real destroy и pull не выполнялись; acceptance/new-generation fail closed до E-07/R-09/R-08. |
+
+### Issues
+#### E-06/B01
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §4.7 read-only `preflight`; обязательный gate `EVIDENCE_GATE`
+- Problem: preflight использует daemon `DockerRootDir` как host path; в Docker Desktop `/var/lib/docker` находится внутри VM и недоступен из WSL host, поэтому безопасная disk-проверка ошибочно блокируется.
+- Evidence: `scripts/lab preflight`, exit 69: `cannot inspect Docker storage path read-only: /var/lib/docker`; daemon сообщает `OperatingSystem=Docker Desktop`, а read-only `df /mnt/wsl/docker-desktop` доступен.
+- Unblock: добавить fail-closed выбор доступного read-only storage path для native Engine, WSL Docker Desktop и явного operator override; повторить preflight и negative mutation.
+- Resolution: preflight выбрал доступный WSL Docker Desktop path, подтвердил 11 GiB free и завершился exit 0; override на несуществующий path завершился ожидаемым exit 69.
+
+#### E-06/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `scripts/check unit`; обязательный gate `EVIDENCE_GATE`
+- Problem: `trap RETURN` обращается к local-переменной `output` после выхода из функции под `set -u`, поэтому успешно прошедшие 34 tests превращаются в exit 1.
+- Evidence: `scripts/check unit`: `Ran 34 tests ... OK`, затем `line 123: output: unbound variable`, итоговый exit 1.
+- Unblock: использовать exit-safe cleanup с немедленно подставленным temp path, повторить non-empty unit suite.
+- Resolution: exit-safe temp cleanup; `scripts/check unit` выполнил 34 tests в exact image с `network=none`, exit 0, 0.58 s.
+
+#### E-06/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: `scripts/lab bootstrap g001`, `scripts/check smoke`; обязательный gate `EVIDENCE_GATE`
+- Problem: повторный bootstrap всегда запускает initial-seed verifier; корректно эволюционировавшая persistent g001 после streaming имеет другие source values и ошибочно блокируется.
+- Evidence: smoke поднял exact services, затем `verify-access.sh` завершился exit 3 с `customers seed mismatch`; cleanup вернул все services в stopped state, volumes/network сохранены.
+- Unblock: full seed verifier выполнять только до первой регистрации connector; для существующего connector проверять текущие runtime/grant/publication invariants без требования initial fixture, затем повторить smoke.
+- Resolution: connector registration probe выбрал existing-generation path; runtime/grant/publication/slot DO block, topic verification, connector idempotency, consumer start и full `scripts/lab status g001` прошли на evolved persistent state.
+
+#### E-06/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: `scripts/check smoke`; обязательный gate `EVIDENCE_GATE`
+- Problem: smoke сравнивает display `server_version`, содержащий Debian package suffix, со строкой `16.13` и ложно падает на точном pinned runtime.
+- Evidence: PostgreSQL вернул `16.13 (Debian 16.13-1.pgdg12+1)`; smoke завершился exit 1 после успешных bootstrap/status assertions; cleanup восстановил stopped state.
+- Unblock: проверять exact numeric `server_version_num=160013`, повторить smoke.
+- Resolution: post-B04 smoke проверил `server_version_num=160013` и завершился exit 0 за 57.77 s; последующие regression runs повторно подтвердили assertion, актуальный final smoke после fix 3 — 67.60 s с восстановлением initial_stopped.
+
+#### E-06/B05
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; mutation coverage command safety contracts
+- Problem: B06 runtime mutation harness передал host `/tmp/*.sql` как container path, поэтому psql завершился до выполнения mutation.
+- Evidence: expected function-body probe exit 1: `psql: error: /tmp/e06-function-body.sql: No such file or directory`; предыдущие validator target/path ошибки сохранены в истории этой проблемы.
+- Unblock: передавать SQL через stdin либо mounted repository path, повторить function-body/extra-trigger/extra-FK/unvalidated-FK probes и normal verifier.
+- Resolution: mutation SQL передаётся в psql через stdin; function-body/extra-trigger/extra-FK/unvalidated-FK probes выполнились в container и дали ожидаемый exit 3, normal verifier после rollback прошёл.
+
+#### E-06/B06
+- State: RESOLVED
+- Category: CODE
+- Affects: idempotent `scripts/lab bootstrap g001`; least-privilege/source invariants; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: existing-generation verifier пропускает source columns, immutable-ID triggers, foreign keys и column-level DML grants, поэтому повторный bootstrap может принять опасный drift.
+- Evidence: reviewer calls 1–3 последовательно выявили grant/trigger/FK drift и подтвердили их fixes; reviewer call 4, P1: verifier всё ещё не проверяет PK/UNIQUE/CHECK constraints и column defaults, поэтому `ALTER TABLE public.payments DROP CONSTRAINT payments_pkey` проходит catalog predicates; `VERDICT BLOCK`.
+- Unblock: в новой попытке E-06 добавить exact полный набор `p/u/c/f` constraints через `pg_get_constraintdef(..., true)` + validation и exact column defaults через `pg_get_expr`, targeted mutation минимум для dropped PK, затем affected checks и fresh review.
+- Resolution: verifier exact-сравнивает полный набор `p/u/c/f` constraints через `pg_get_constraintdef(..., true)` с validation/deferrability flags и полный набор defaults через `pg_get_expr`; 8 transactional mutations, включая `DROP payments_pkey`, дали ожидаемый exit 3, normal verifier после rollback прошёл.
+
+#### E-06/B07
+- State: RESOLVED
+- Category: CODE
+- Affects: generation-scoped destructive boundary; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: destroy scope проверяет containers/volumes, но не network, которую затем удаляет `compose down --volumes`.
+- Evidence: reviewer call 1, P1: network с отсутствующим/чужим generation label проходит guard и остаётся целью удаления; `VERDICT BLOCK`.
+- Unblock: fail-closed проверить exact project network name и project/generation labels до destructive command; добавить negative assertion без удаления ресурсов.
+- Resolution: guard требует ровно одну network, exact name `cdc-lab-g001_cdc-lab`, Compose project label и generation `g001`; live labels подтверждены без удаления, а mutation удаления network-list guard обнаружена validator-ом.
+
+#### E-06/B08
+- State: RESOLVED
+- Category: CODE
+- Affects: `scripts/lab lag g001`; `docs/spec.md` §6; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: slot query с нулём строк даёт psql exit 0, поэтому lag может успешно завершиться без третьей обязательной метрики.
+- Evidence: reviewer call 1, P1: отсутствующий `postgres_cdc_g001` печатает пустую WAL-секцию и не меняет exit status; `VERDICT BLOCK`.
+- Unblock: потребовать ровно одну строку ожидаемого slot, валидный `wal_status` и fail-stop для missing/lost; добавить targeted negative assertion.
+- Resolution: pure validator принимает valid slot row и возвращает ожидаемый exit 69 для empty/lost; live `scripts/lab lag g001` вывел exact slot, `wal_status=reserved`, retained bytes и threshold, exit 0.
+
+#### E-06/B09
+- State: RESOLVED
+- Category: CODE
+- Affects: `scripts/lab lag g001`; `docs/spec.md` §6 / AC-009 contribution; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: lag требует running consumer, хотя контракт требует диагностику при временно остановленном/fail-stop consumer.
+- Evidence: reviewer call 2, P1: `require_running_service consumer` завершает command exit 69 до Kafka/event-age/WAL metrics; `VERDICT BLOCK`.
+- Unblock: при stopped consumer читать generation sink через ephemeral network-none read-only inspector с exact read-only volume, сохраняя running path; проверить оба состояния.
+- Resolution: lag больше не требует running consumer; при stopped/exited consumer exact generation-labeled sink volume монтируется read-only в ephemeral `--network none --read-only --rm` inspector. Live test после core-only `lab up` подтвердил consumer state `exited` и все три метрики, exit 0.
+
+#### E-06/B10
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; final static mutation validator
+- Problem: validator заменяет только первое вхождение safety marker, а presence assertion проходит за счёт второго вхождения и не обнаруживает mutation.
+- Evidence: final fast завершился exit 1: `mutation not detected scripts/lab --pull never --no-build`; unit suite до этой точки не запускался.
+- Unblock: mutation harness должен удалять все вхождения либо проверять exact counts/targeted blocks, затем повторить final fast checks.
+- Resolution: replacement изменён на marker-free token; post-fix validator обнаружил 30 safety mutations, `bash -n`, Compose argv/slot pure probes, exact-image 34 tests и whitespace checks прошли; final fast 1.113 s, unit 1.031 s.
+
+#### E-06/B11
+- State: RESOLVED
+- Category: CODE
+- Affects: generation-scoped destructive boundary; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: Compose wrapper не pin-ит project name, поэтому внешний `COMPOSE_PROJECT_NAME` может направить destructive invocation на project, отличный от проверенного guard-ом.
+- Evidence: reviewer call 1, P1: `verify_destroy_scope` проверяет `$COMPOSE_PROJECT`, но `docker compose` без `--project-name` принимает environment override; `VERDICT BLOCK`.
+- Unblock: всегда передавать `--project-name "$COMPOSE_PROJECT"` и добавить безопасный argv mock с внешним override.
+- Resolution: Compose wrapper всегда передаёт `--project-name cdc-lab-g001`; argv mock при `COMPOSE_PROJECT_NAME=foreign` подтвердил exact target, а live `lab up` с override поднял только g001 resources и восстановил stopped state.
+
+#### E-06/B12
+- State: RESOLVED
+- Category: CODE
+- Affects: idempotent existing-generation bootstrap; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: publication verifier проверяет только table names и пропускает publish flags, column lists и row filters.
+- Evidence: reviewer call 1, P1: `ALTER PUBLICATION ... SET (publish = 'insert')` сохраняет table rows и проходит текущий verifier; `VERDICT BLOCK`.
+- Unblock: exact-проверить `pg_publication` flags и отсутствие column lists/row filters; добавить transactional mutations.
+- Resolution: verifier exact-сверяет `pg_publication` flags и raw `pg_publication_rel` без `prattrs`/`prqual`; publish flags, column-list и row-filter mutations дали expected exit 3, normal verifier после rollback прошёл.
+
+#### E-06/B13
+- State: RESOLVED
+- Category: CODE
+- Affects: `scripts/lab lag g001`; `docs/spec.md` §6.1; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: lag query/validator не выводит `safe_wal_size`, доступный в закреплённом PostgreSQL 16.
+- Evidence: reviewer call 1, P1: output содержит slot/status/retained bytes/threshold, но не обязательный доступный `safe_wal_size`; `VERDICT BLOCK`.
+- Unblock: добавить поле в query/output, валидировать numeric/NULL semantics и targeted pure mutations.
+- Resolution: lag query/output включает `safe_wal_size`; validator требует non-negative numeric value для usable slot и по-прежнему fail-stop для `lost`. Pure valid/missing/non-numeric/lost cases и live numeric output прошли.
+
+#### E-06/B14
+- State: RESOLVED
+- Category: CODE
+- Affects: generation isolation; idempotent bootstrap; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: exported generation-scoped variables override validated `--env-file` values and могут направить startup/topic creation в foreign namespace.
+- Evidence: reviewer call 2, P1: hostile `KAFKA_TOPIC_PREFIX/topics`, connector/slot/publication/group/sink overrides имеют Compose precedence; Kafka bootstrap может создать foreign topics до later conflict; `VERDICT BLOCK`.
+- Unblock: fail-closed удалить exported overrides перед Compose interpolation либо pin exact validated values; добавить hostile config/runtime mock для всех generation-scoped keys.
+- Resolution: Compose wrapper в subshell удаляет 15 validated generation/secret variable overrides до чтения env files и отдельно pin-ит `CDC_GENERATION`; hostile `compose config` не содержал sentinel и подтвердил 18 exact g001 service values.
+
+#### E-06/B15
+- State: RESOLVED
+- Category: CODE
+- Affects: generation-scoped destructive boundary; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: volume guard перечисляет только resources с ожидаемой project label; exact Compose-declared volume с missing/foreign label исключается из проверки, но остаётся целью `down --volumes`.
+- Evidence: reviewer call 2, P1: label-filter enumeration fail-open для `cdc-lab-g001_consumer-data` и других declared volumes; `VERDICT BLOCK`.
+- Unblock: direct inspect восьми exact declared volume names и exact labels до destructive invocation; сохранить rejection неожиданных project volumes и добавить non-destructive mock mutation.
+- Resolution: guard direct-inspect-ит восемь exact declared volume names и требует exact project/generation/purpose labels, затем отклоняет неожиданные project-scoped volumes. Wrong-label mock завершился expected exit 65; exact-label positive mock достиг только mocked `compose down --volumes`.
+
+#### E-06/B16
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; B15 positive destroy-scope mock
+- Problem: первый positive mock exact labels завершился exit 65 до mocked `compose down`; temp diagnostics были удалены cleanup trap.
+- Evidence: `scripts/lab destroy g001 --confirm g001` под mock Docker, exit 65; stdout/stderr не сохранены после trap, поэтому assertion не подтверждён.
+- Unblock: повторить mock с сохранением diagnostics, исправить mock либо guard по наблюдаемой причине и получить positive + wrong-label outcomes без real destroy.
+- Resolution: diagnostics выявили реальный label spelling `com.docker.compose.oneoff=False`; guard исправлен на exact value. Corrected positive mock прошёл полный path: `down` без `--volumes` и 8 exact `volume rm` calls.
+
+#### E-06/B17
+- State: RESOLVED
+- Category: CODE
+- Affects: idempotent existing-generation bootstrap; delete/update CDC; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: source verifier не проверяет table replica identity и принимает `REPLICA IDENTITY NOTHING` при сохранённых PK/constraints.
+- Evidence: reviewer call 3, P1: `ALTER TABLE public.payments REPLICA IDENTITY NOTHING` не меняет текущие predicates, но ломает публикуемые UPDATE/DELETE; `VERDICT BLOCK`.
+- Unblock: exact-проверить ordinary permanent table properties и `relreplident='d'` для всех source tables; добавить transactional mutation и normal pass.
+- Resolution: verifier exact-сверяет ordinary/permanent/default-replica-identity/non-RLS/non-partitioned properties всех source tables; `REPLICA IDENTITY NOTHING` и `ENABLE ROW LEVEL SECURITY` mutations дали expected exit 3, normal verifier после rollback прошёл.
+
+#### E-06/B18
+- State: RESOLVED
+- Category: CODE
+- Affects: generation-scoped destructive boundary; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: `compose down --volumes` может удалить anonymous volumes, прикреплённые к target containers, вне восьми validated named volumes.
+- Evidence: reviewer call 3, P1: guard не инспектирует mounts, а `--volumes` расширяет destructive target; `VERDICT BLOCK`.
+- Unblock: безопасный вариант — `compose down` без `--volumes`, затем повторно проверить и удалить явно только 8 exact named volumes; добавить mock, запрещающий broad volume flag/unknown removal.
+- Resolution: destructive path выполняет Compose `down` без `--volumes`, затем повторно валидирует и удаляет только 8 exact named volumes; exact project/service/oneoff container set также проверяется. Positive mock подтвердил отсутствие broad flag/unknown removal и ровно 8 removals.
+
+#### E-06/B19
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FINAL_EVIDENCE_AND_DIFF_GATE`; согласованность итоговой status-записи
+- Problem: перед reviewer call 4 поле `Progress/Remaining` содержало pre-review действие; после `VERDICT OK` оно стало stale, а изменение Progress не входит в узкую служебную финализацию.
+- Evidence: reviewer call 4 вернул `VERDICT OK` без findings; финальное перечитывание показало `Remaining: выполнить четвёртый ... re-review`. Лимит 4 calls / 3 fixes исчерпан.
+- Unblock: в новой попытке E-06 подтвердить неизменность code diff/evidence, установить `Remaining: none` до вызова и выполнить один fresh read-only review финальной status-секции.
+- Resolution: текущая попытка установила `Remaining: none` до review; fresh read-only reviewer call 1 проверил полный diff, применимость evidence и status consistency, findings отсутствуют, `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: fresh read-only reviewer проверил полный tracked/untracked diff, все E-06 code-файлы, применимость evidence, исправленную Progress-запись, B19 и сохранность чужих status-секций; BLOCKER/DEFERRED/IMPROVEMENT отсутствуют, `VERDICT OK`.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.

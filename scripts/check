@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=scripts/lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+readonly LAB="$SCRIPT_DIR/lab"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/check unit
+  scripts/check smoke
+  scripts/check acceptance AC-001
+  scripts/check acceptance all
+
+Acceptance orchestration is added by E-07/R-09. Until then acceptance selectors fail
+closed with a nonzero status; an unavailable or empty selection is never a pass.
+EOF
+}
+
+consumer_python_version_probe() {
+  docker run --rm --network none --read-only --tmpfs /tmp:size=16m \
+    "$CONSUMER_IMAGE" \
+    python -c 'import platform; actual = platform.python_version(); expected = "3.12.12"; assert actual == expected, f"expected Python {expected}, got {actual}"; print(f"python={actual}")'
+}
+
+unit_checks() {
+  require_no_arguments "$@"
+  require_command docker
+  docker image inspect "$CONSUMER_IMAGE" >/dev/null 2>&1 \
+    || fail "consumer image is unavailable; run scripts/lab pull" 69
+  consumer_python_version_probe
+
+  local output tests_run
+  output="$(mktemp)"
+  trap "rm -f -- '$output'" EXIT
+  set +e
+  docker run --rm \
+    --network none \
+    --read-only \
+    --tmpfs /tmp:size=64m \
+    --volume "$PROJECT_ROOT/consumer/src:/opt/cdc/consumer/src:ro" \
+    --volume "$PROJECT_ROOT/consumer/tests:/opt/cdc/consumer/tests:ro" \
+    --volume "$COMPOSE_FILE:/opt/cdc/compose.yaml:ro" \
+    --env PYTHONPATH=/opt/cdc/consumer/src \
+    --workdir /opt/cdc \
+    "$CONSUMER_IMAGE" \
+    python -m unittest discover --start-directory consumer/tests --verbose \
+    >"$output" 2>&1
+  local status=$?
+  set -e
+  cat "$output"
+  ((status == 0)) || fail "unit test command failed with exit status $status" "$status"
+  tests_run="$(awk '/^Ran [0-9]+ tests? in / {print $2}' "$output" | tail -n 1)"
+  [[ "$tests_run" =~ ^[0-9]+$ && "$tests_run" -gt 0 ]] \
+    || fail "unit command did not execute a non-empty test suite" 1
+  rm -f -- "$output"
+  trap - EXIT
+  printf 'unit checks passed tests=%s image=%s network=none\n' "$tests_run" "$CONSUMER_IMAGE"
+}
+
+smoke_cleanup_needed=0
+smoke_cleanup() {
+  local status=$?
+  if ((smoke_cleanup_needed)); then
+    printf 'restoring initial stopped service state; preserving volumes and network\n' >&2
+    "$LAB" stop >/dev/null || true
+  fi
+  return "$status"
+}
+
+smoke_checks() {
+  require_no_arguments "$@"
+  require_command docker
+  local running_services=0
+  local service
+  for service in postgres kafka connect consumer; do
+    if [[ "$(service_state "$service")" == "running" ]]; then
+      running_services=$((running_services + 1))
+    fi
+  done
+  case "$running_services" in
+    0) smoke_cleanup_needed=1 ;;
+    4) smoke_cleanup_needed=0 ;;
+    *) fail "smoke requires all project services either stopped or already running; found $running_services/4 running" 69 ;;
+  esac
+  trap smoke_cleanup EXIT
+
+  "$LAB" preflight
+  "$LAB" up
+  "$LAB" bootstrap "$DEFAULT_GENERATION"
+  "$LAB" status "$DEFAULT_GENERATION"
+
+  local postgres_version kafka_version
+  postgres_version="$(
+    compose exec --no-TTY postgres bash -Eeuo pipefail -c '
+      psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --no-psqlrc \
+        --tuples-only --no-align --command="SHOW server_version_num;"
+    '
+  )"
+  [[ "$postgres_version" == "160013" ]] \
+    || fail "unexpected PostgreSQL server_version_num: $postgres_version" 1
+
+  kafka_version="$(compose exec --no-TTY kafka /kafka/bin/kafka-topics.sh --version)"
+  [[ "$kafka_version" == *"4.3.0"* ]] \
+    || fail "unexpected Kafka version: $kafka_version" 1
+
+  compose exec --no-TTY connect python3 - <<'PY'
+import json
+from urllib.request import ProxyHandler, build_opener
+
+opener = build_opener(ProxyHandler({}))
+with opener.open("http://127.0.0.1:8083/connector-plugins", timeout=10) as response:
+    plugins = json.load(response)
+matching = [
+    plugin
+    for plugin in plugins
+    if plugin.get("class") == "io.debezium.connector.postgresql.PostgresConnector"
+]
+if len(matching) != 1 or matching[0].get("version") != "3.6.3.Final":
+    raise SystemExit(f"unexpected Debezium PostgreSQL plugin metadata: {matching!r}")
+print("debezium-postgres=3.6.3.Final")
+PY
+
+  consumer_python_version_probe
+  docker run --rm --network none --read-only --tmpfs /tmp:size=16m \
+    "$CONSUMER_IMAGE" python /opt/cdc/consumer/check-runtime.py
+  printf 'smoke checks passed generation=%s postgres=16.13 kafka=4.3.0 debezium=3.6.3.Final\n' \
+    "$DEFAULT_GENERATION"
+}
+
+acceptance_checks() {
+  (($# == 1)) || fail "usage: scripts/check acceptance <AC-001..AC-014|all>" 64
+  local selector="$1"
+  if [[ "$selector" != "all" && ! "$selector" =~ ^AC-0(0[1-9]|1[0-4])$ ]]; then
+    fail "unknown acceptance selector: $selector" 64
+  fi
+  fail "acceptance $selector is unavailable until E-07/R-09 adds non-empty end-to-end assertions and evidence capture" 69
+}
+
+main() {
+  (($# >= 1)) || { usage >&2; exit 64; }
+  local command="$1"
+  shift
+  case "$command" in
+    unit) unit_checks "$@" ;;
+    smoke) smoke_checks "$@" ;;
+    acceptance) acceptance_checks "$@" ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; fail "unknown check command: $command" 64 ;;
+  esac
+}
+
+main "$@"
