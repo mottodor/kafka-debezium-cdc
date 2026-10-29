@@ -399,3 +399,50 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: R-02
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-02`; behavioral contract — `docs/spec.md` §§3.2–3.5, 5.1, 9.1, `AC-001`, `AC-008`, `AC-014`
+- Status: REVIEW_READY
+- Updated: 2026-10-29T16:27:04+03:00
+- Baseline HEAD: `3fdd4204dcbcb7ed804af510af351a14e10b186b`
+
+### Progress
+- Implemented: exact g001 verifier проверяет ordered key/envelope/table/source/transaction descriptors, required optionality и snapshot enum metadata, полный row set/Decimal fixtures, per-key partition/order и полный Kafka history (`low=0`, contiguous offsets, `position=high`); generation guard включает connector/slot/publication. Две fix-итерации и final pre/post-restart runtime прошли; services возвращены в stopped state, volumes/network сохранены.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-02`, наблюдаемый выход | PASS | fast final: `py_compile`, self-test, `git diff --check`, exit 0, 0.08 s; LSP 0 findings. Mutations обнаруживают transaction/snapshot/partition/history, missing/wrong amount, missing schema, composite key, wrong source optionality, optional op и reordered source/envelope. Standard final: exact full-history run до/после restart — `r=5,c=3,u=3`, 11 records, 9 complete partition states, exit 0, 13.45/15.29 s. |
+| `docs/spec.md` §9, `AC-001` (connector/Kafka contribution) | PASS | final: все 5 snapshot events проверены внутри полного history — ordered embedded schemas, exact keys/rows, Decimal `120.50/49.99`, initial markers, nonzero LSN; все partition low=0 и прочитаны до high. SQLite raw/projection остаются scope R-03–R-05. |
+| `docs/spec.md` §9, `AC-008` (topic-independence contribution) | PASS | final: три exact g001 topics × 3 partitions; same table/key остаётся в одной partition и exact offset order, cross-topic order не предполагается; rows/topics/history проверены независимо. SQLite child-before-parent относится к R-04/R-05. |
+| `docs/spec.md` §9, `AC-014` (connector lifecycle contribution) | PASS | final: Connect restart 2.54 s; pre/post earliest/latest идентичны и low=0; post-restart verifier снова exact `r=5,c=3,u=3`, connector/task `RUNNING`, slot `postgres_cdc_g001|pgoutput|cdc_lab|active`. Sink assertion относится к R-05. |
+
+### Issues
+#### R-02/B01
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §6.3 `R-02`; `AC-001`; обязательные gates `EVIDENCE_GATE`, `FRESH_READ_ONLY_REVIEW`
+- Problem: verifier проверяет только subset row fields и имя value envelope, поэтому может принять отсутствующие/неверные amounts, неполную embedded schema или дополнительное key field.
+- Evidence: reviewer call 1: synthetic self-test проходит с сокращённым `after` и `value.schema={name}`; `amount`/`total_amount` отсутствуют в expected fixtures; key schema требует лишь наличие `id`; `VERDICT BLOCK`.
+- Unblock: проверять exact key/schema/envelope/table fields, декодировать Kafka Connect Decimal, добавить negative mutations и повторить live snapshot/streaming.
+- Resolution: rows/Decimal/key shape, ordered schema field descriptors, exact source optionality, `op.optional=false` и snapshot enum metadata проверяются; targeted mutations wrong optionality/optional op/reordered source/reordered envelope обнаружены; два final live run прошли на pinned Debezium schema.
+
+#### R-02/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-001`, `AC-014`; обязательные gates `EVIDENCE_GATE`, `FRESH_READ_ONLY_REVIEW`
+- Problem: verifier начинает с текущего log start и не требует `low=0`, поэтому после retention может принять неполный suffix как полную generation history.
+- Evidence: reviewer call 1: полученный low watermark сохраняется только как начальная позиция; synthetic offsets можно сдвинуть на 100 без failure; runtime evidence не фиксировало log-start offsets; `VERDICT BLOCK`.
+- Unblock: fail-closed требовать `low=0` для всех девяти partitions, выводить low/high/final position и добавить negative mutation ненулевого low.
+- Resolution: verifier требует `low=0`, contiguous `range(low, high)` и `position=high`, выводит state каждой partition; mutation low=1 обнаружена; pre/post-restart runtime подтвердил неизменные low/high и полный read.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: call 1 выявил B01/B02; call 2 подтвердил B02 и часть B01, затем выявил schema order/optionality blocker; call 3 проверил полный финальный diff/status, подтвердил обе fixes и final evidence, findings отсутствуют, `VERDICT OK`.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
