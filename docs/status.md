@@ -501,3 +501,123 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: R-04
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-04`; behavioral contract — `docs/spec.md` §§5.1–5.6 и 9, `AC-003`, `AC-005`, `AC-006`, `AC-012`
+- Status: REVIEW_READY
+- Updated: 2026-10-29T17:45:53+03:00
+- Baseline HEAD: `e8b013b40251be929258c800ec3fc8ba84659866`
+
+### Progress
+- Implemented: добавлены strict parser/embedded-schema validation для `before`/`after`, signed-int64 bounds, lexicographic ordering token, generation-bound atomic processor, historical collision detection, delete/tombstone/stale/duplicate semantics и durable fail-stop errors.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-04`, наблюдаемый выход | PASS | final current attempt: host suite 26 tests, exit 0, 0.47 s; exact-image read-only/network-none suite 26 tests, exit 0, 0.55 s; twelve mutations detected, включая reject-valid-empty-strings; packaged-source build/import probe exit 0, 0.82/0.42 s; `git diff --check` exit 0; LSP 0 findings; temp image removed. |
+| `docs/spec.md` §9, `AC-003` | PASS | current host/exact-image targeted test подтверждает create→delete→tombstone archive, watermark-before-delete trigger, отсутствие projection row и неизменность watermark после tombstone. |
+| `docs/spec.md` §9, `AC-005` | PASS | current host/exact-image targeted test подтверждает newer applied, older archived `stale`, late snapshot stale по `phase_rank`, projection/watermark не откатываются. |
+| `docs/spec.md` §9, `AC-006` | PASS | current host/exact-image targeted test подтверждает old update после delete как `stale`, отсутствие resurrection и сохранённый delete watermark. |
+| `docs/spec.md` §9, `AC-012` | PASS | current host/exact-image tests подтверждают durable fail-stop для malformed envelope/key/op/ordering/schema/projection и oversized signed-int64 в `before`/`after`; original bytes/diagnostics и repeated attempt count сохранены. Kafka offset commit остаётся R-05 scope. |
+
+### Issues
+#### R-04/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; negative/mutation evidence для comparator/delete/error paths
+- Problem: первый mutation harness запустил тестовый модуль из рабочего репозитория вместо временной мутированной копии, поэтому mutation comparator не была обнаружена.
+- Evidence: harness сообщил `MUTATION_NOT_DETECTED stale-comparator`, но команда импортировала `consumer.tests...` из текущего cwd при `PYTHONPATH` только для temp `src`; обычные host и exact-image suites при этом прошли по 20 tests.
+- Unblock: запускать временный test file из temp cwd или через discovery temp tree, затем повторить четыре mutations и подтвердить ожидаемые failures.
+- Resolution: исправленный harness запускал discovery из каждой temp-копии и обнаружил пять mutations: reversed stale comparator, skipped watermark, skipped delete, skipped error upsert и skipped generation check.
+
+#### R-04/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: standard packaged-source probe; обязательный gate `EVIDENCE_GATE`
+- Problem: первый derived-image import probe не задал `PYTHONPATH`, потому что использовал старый verified base image как foundation и не повторил актуальный Dockerfile `ENV`; импорт нового модуля завершился `ModuleNotFoundError`.
+- Evidence: network-none derived build и `py_compile` прошли, затем runtime probe exit 1; inspect ранее показывал отсутствие `PYTHONPATH` в env base image. Cleanup удалил только временный image `cdc-lab-consumer:r04-check`.
+- Unblock: повторить derived Dockerfile с `ENV PYTHONPATH=/opt/cdc/consumer/src`, затем выполнить network-none import/runtime probe и удалить временный image.
+- Resolution: corrected derived Dockerfile задал актуальный `PYTHONPATH`; network-none build/py_compile прошёл за 0.73 s, read-only import/token probe — за 0.39 s; temporary image удалён.
+
+#### R-04/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/spec.md` §5.3 equal-token fail-stop; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: collision проверяется только против current watermark; повтор token ранее архивированного stale event на другой Kafka coordinate ошибочно снова архивируется как stale.
+- Evidence: reviewer call 1: sequence token 300 applied → token 200 stale → token 200 на другом offset не вызывает `OrderingCollisionError`; `VERDICT BLOCK`.
+- Unblock: искать equal ordering token во всей raw history того же generation/table/key до insert и добавить regression для повторённого stale token.
+- Resolution: query ищет token во всей raw history generation/table/key; `newest → stale → repeated stale token` regression и skip-history-collision mutation подтверждают fail-stop с rollback raw и durable error.
+
+#### R-04/B04
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-012`; missing/invalid primary-key fail-stop
+- Problem: empty/missing Kafka key отклоняется до protected transaction/error-upsert path; `KafkaRecord.key` не допускает `None`, поэтому исходный nullable key нельзя сохранить в `ingestion_errors`.
+- Evidence: reviewer call 1: `key=b''` вызывает `ValueError` до `try`, error row/attempt count отсутствуют; `VERDICT BLOCK`.
+- Unblock: разрешить nullable key, отделить persistable coordinate от content validation, писать nullable key безопасно и добавить repeated-attempt regression.
+- Resolution: `KafkaRecord.key` допускает `None`; missing/empty key валидируются внутри protected path, nullable bytes upsert безопасен; repeated-attempt regression подтверждает `attempt_count=2`, allow-missing-key mutation обнаружена.
+
+#### R-04/B05
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-003`; `docs/spec.md` §5.3 delete ordering invariant
+- Problem: processor физически удаляет projection row до обновления delete watermark, вопреки обязательному порядку.
+- Evidence: reviewer call 1: `_write_projection()` вызывается перед `_write_watermark()` для всех operations; одна transaction обеспечивает rollback, но не требуемый operation order; `VERDICT BLOCK`.
+- Unblock: для delete сначала записывать watermark, затем удалять projection; добавить trigger/trace regression, наблюдающий watermark во время DELETE.
+- Resolution: delete branch пишет watermark до projection delete; test trigger наблюдает новый delete watermark внутри `BEFORE DELETE`; reversed-order mutation обнаружена, final host/exact-image suites проходят.
+
+#### R-04/B06
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; post-review mutation evidence
+- Problem: post-fix mutation harness остановился после первой mutation, потому что общий target `_write_watermark(...)` теперь встречается в delete и non-delete branches дважды.
+- Evidence: `stale-comparator` mutation обнаружена, затем harness завершился exit 1 с `mutation target count=2`; exact-image final suite 23 tests прошла. Вторая попытка с block target не декодировала literal `\\n` и также остановилась до test execution.
+- Unblock: использовать уникальный branch block и декодировать escaped newlines в mutation helper, затем повторить все eight mutations.
+- Resolution: corrected helper заменил escaped newlines на реальные; все eight mutations обнаружены, включая skip-history-collision, allow-missing-key и reversed delete/watermark order.
+
+#### R-04/B07
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-012`; incompatible numeric type durable fail-stop; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: `_require_int` не ограничивает Connect `int64` сверху; oversized key/domain/ordering values могут вызвать Python SQLite `OverflowError` вне `ProcessingError` path и не записать `ingestion_errors`.
+- Evidence: reviewer call 2: `orders.after.customer_id = 2**63` проходит parser, SQLite bind выбрасывает `OverflowError`; raw rollback есть, durable error/attempt count отсутствуют; `VERDICT BLOCK`.
+- Unblock: enforce signed int64 upper bound для всех embedded int64, добавить repeated-attempt regression и mutation, повторить host/exact-image/packaged-source checks и fresh review.
+- Resolution: введён `INT64_MAX=2**63-1` в общей int validation; oversized `orders.customer_id` regression дважды получает `RecordValidationError`, raw/projection отсутствуют, original bytes и attempt count сохраняются; allow-oversized-int64 mutation обнаружена, final 24-test host/exact-image suites проходят.
+
+#### R-04/B08
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-012`; malformed embedded `before` values; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: update/delete `before` payload проверяется только как object/id; остальные non-null embedded values обходят type/int64 validation.
+- Evidence: reviewer call 3: `orders.before.customer_id = 2**63` принимается и event может архивироваться/применяться; B07 regression покрывает только `after`; `VERDICT BLOCK`.
+- Unblock: валидировать каждое non-null `before` field по embedded row schema с поддержкой null old-row fields; добавить repeated-attempt update/delete regressions, повторить checks/mutation и последний fresh review.
+- Resolution: `_validate_before_row` проверяет exact fields и каждый non-null value по embedded schema, сохраняя допустимые null old-row fields; update/delete oversized regressions дважды подтверждают durable error/no raw/projection; skip-update/delete-before mutations обнаружены, final suites проходят.
+
+#### R-04/B09
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FINAL_EVIDENCE_AND_DIFF_GATE`; согласованность итоговой status-записи
+- Problem: перед reviewer call 4 поле Progress/Remaining ошибочно оставили в pre-review состоянии; его исправление не входит в узкое исключение служебной финализации после итогового OK, а лимит четырёх reviewer-вызовов исчерпан.
+- Evidence: reviewer call 4 вернул `VERDICT OK`, но финальное перечитывание обнаружило stale фразу `выполнить четвёртый ... reviewer-вызов`; содержательное изменение Progress требует fresh review, недоступный в текущей попытке по бюджету.
+- Unblock: новая попытка R-04 подтверждает неизменность code diff/evidence, исправляет Progress/Remaining и выполняет один fresh read-only review финальной секции.
+- Resolution: текущая попытка повторно подтвердила evidence; reviewer call 2 проверил финальные `Progress/Remaining`, полный diff и status consistency, подтвердил B03–B10 и вернул `VERDICT OK`.
+
+#### R-04/B10
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §6.3 `R-04`; source/projection parity; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: row validation требует non-empty для всех domain strings, хотя source DDL разрешает пустые `customers.email` и `payments.provider_ref`.
+- Evidence: reviewer call 1 текущей попытки: `processing.py` отклоняет `email=''`/`provider_ref=''`, а `postgres/init/10-source-schema.sql` задаёт только `TEXT NOT NULL UNIQUE` без non-empty CHECK; `VERDICT BLOCK`.
+- Unblock: разрешить пустые строки ровно для полей, где source contract это допускает; добавить after и update/delete before regressions, affected mutation/checks и fresh review.
+- Resolution: field-aware string validation разрешает пустые значения только для `customers.email` и `payments.provider_ref`; regression применяет empty after и update/delete before values, проверяет projection/raw outcomes; reject-valid-empty-strings mutation обнаружена, final 26-test host/exact-image suites проходят.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: call 1 выявил R-04/B10; после targeted fix call 2 проверил полный финальный tracked/untracked diff, status consistency и отсутствие регрессий B03–B08, вернул `VERDICT OK`. IMPROVEMENT: усилить negative oracle, временно разрешающий пустые строки для других domain fields; текущая реализация корректно их отклоняет. DEFERRED: runtime evidence не перезапускалось read-only reviewer tools.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
