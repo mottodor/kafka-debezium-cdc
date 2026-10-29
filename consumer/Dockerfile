@@ -21,4 +21,4 @@ ENV PYTHONPATH=/opt/cdc/consumer/src
 
 USER cdc
 
-CMD ["python", "check-runtime.py"]
+CMD ["python", "-m", "cdc_consumer.runner"]

@@ -621,3 +621,68 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: R-05
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-05`; behavioral contract — `docs/spec.md` §§4.2, 5.4 и 9, `AC-002`, `AC-004`, `AC-014`
+- Status: REVIEW_READY
+- Updated: 2026-10-29T18:14:34+03:00
+- Baseline HEAD: `a9c926d29f6b22a78c70a8a2e8f97cba6b091b78`
+
+### Progress
+- Implemented: добавлены sequential consume loop, ручная synchronous commit boundary с проверкой partition result, generation-scoped Compose consumer/volume, exact-coordinate crash-window fault injection и targeted unit/mutation tests; exact-image и live g001 assertions прошли.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-05`, наблюдаемый выход | PASS | fast final after review-fix: host suite 34 tests, exit 0, 0.53 s; `py_compile`, resolved Compose config (`consumer.restart=no`) и `git diff --check`, exit 0; five targeted mutations обнаружены. standard: exact-image suite 34 tests, exit 0, 0.10 s; runtime versions 2.16.0. Live consumer последовательно обработал history/streaming records, synchronous commits дали lag 0. |
+| `docs/spec.md` §9, `AC-002` (consumer/commit contribution) | PASS | standard live: initial consumer обработал full Kafka history `r=5,c=3,u=3`; raw=11, projection точно совпала с source `customers=3/orders=3/payments=2`, ingestion errors=0, committed lag=0. Последующие streaming updates применены; final raw=17, source/sink возвращены к deterministic fixture (`Alice Cooper`, `Bob Brown`), lag=0. |
+| `docs/spec.md` §9, `AC-004` | PASS | acceptance final через actual Compose service: fault at `customers:1:4` завершил container `exited|86|restart_count=0` и оставался exited через 3 s; raw count=1/delivery=1 и projection durable, group offset остался 4 при log-end 5. Только explicit `compose up --force-recreate consumer` повторно получил coordinate (`duplicate=true`), сохранил raw count=1, увеличил delivery_count=2 и committed offset 5/lag 0; fixture cleanup также committed, final lag=0. |
+| `docs/spec.md` §9, `AC-014` (sink contribution) | PASS | acceptance live: Connect restart достиг connector/task `RUNNING` за 33.1 s с тем же active slot `postgres_cdc_g001`; после source update новый record `customers:2:2` применён в sink за 1.60 s, snapshot raw count остался 5 и group lag=0. Cleanup updates также обработаны, final source/sink fixture восстановлен без нового snapshot. |
+
+### Issues
+#### R-05/B01
+- State: RESOLVED
+- Category: ENVIRONMENT
+- Affects: обязательный gate `EVIDENCE_GATE`; exact-image standard checks
+- Problem: network-disabled build финального Dockerfile не имеет BuildKit cache dependency layer и пытается повторно скачать `confluent-kafka==2.16.0`.
+- Evidence: `docker build --network=none --pull=false --tag cdc-lab-consumer:r05-check consumer`, exit 1 после 8.6 s; exact dependency недоступна без сети, существующий проверенный image `cdc-lab-consumer:g001` доступен локально.
+- Unblock: построить derived image от ранее проверенного exact `cdc-lab-consumer:g001`, скопировав только новый source/CMD без dependency download, и выполнить exact-image tests/probes.
+- Resolution: derived network-none build от exact verified image прошёл за 8.8 s; exact-image suite 33 tests прошла за 0.59 s, runtime version probe подтвердил confluent-kafka/librdkafka 2.16.0 за 0.47 s.
+
+#### R-05/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: container runtime path; обязательный gate `EVIDENCE_GATE`
+- Problem: derived image для network-none проверки не воспроизвёл актуальный Dockerfile `PYTHONPATH`, поэтому default consumer command не может импортировать package.
+- Evidence: первый one-shot consumer run, exit 1: `ModuleNotFoundError: No module named 'cdc_consumer'`; image inspect подтвердил отсутствие `PYTHONPATH`, хотя source files присутствуют.
+- Unblock: добавить `ENV PYTHONPATH=/opt/cdc/consumer/src` в derived image, повторить exact-image default-command import/test probe и one-shot runtime.
+- Resolution: corrected derived image содержит `PYTHONPATH=/opt/cdc/consumer/src`; import probe и exact-image 33-test suite прошли, после чего default one-shot consumer успешно обработал/закоммитил live records.
+
+#### R-05/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-004`, fail-stop contract и обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: consumer наследует общий Compose `restart: unless-stopped`, поэтому controlled fault, malformed event или commit failure автоматически перезапускаются вместо устойчивого fail-stop до явного operator restart.
+- Evidence: reviewer call 1, `VERDICT BLOCK`: `compose.yaml` consumer не переопределяет service-default restart policy; live AC-004 выполнялся one-shot `compose run`, а не основным Compose service.
+- Unblock: установить consumer `restart: "no"`, добавить config regression и повторить AC-004 через фактический service с проверкой exited(86), неизменного group offset и explicit restart duplicate/commit.
+- Resolution: consumer явно задаёт `restart: "no"`; resolved Compose config и static regression это подтверждают. Actual service fault остался `exited|86|restart_count=0` через 3 s с lag 1, а duplicate/offset commit произошли только после explicit recreate; five-mutation harness обнаруживает удаление override.
+
+#### R-05/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: exact-image standard checks after R-05/B03 fix
+- Problem: новый Compose regression test ожидает repository-root `compose.yaml`, но первый exact-image test invocation смонтировал только `consumer/tests`.
+- Evidence: exact-image 34-test suite, exit 1: `FileNotFoundError: /opt/cdc/compose.yaml`; остальные 33 tests прошли.
+- Unblock: смонтировать `compose.yaml` read-only в ожидаемый `/opt/cdc/compose.yaml` и повторить exact-image suite.
+- Resolution: exact-image suite повторена с read-only mount `compose.yaml` в `/opt/cdc/compose.yaml`; все 34 tests прошли за 0.10 s.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: call 1 выявил blocker R-05/B03; после targeted restart-policy fix call 2 проверил полный финальный tracked/untracked diff, actual Compose-service evidence, закрытие R-05/B03/B04 и вернул `VERDICT OK` без findings.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.

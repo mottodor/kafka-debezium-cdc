@@ -139,6 +139,36 @@ services:
     mem_reservation: 512m
     pids_limit: 512
 
+  consumer:
+    <<: *service-defaults
+    restart: "no"
+    image: cdc-lab-consumer:g001
+    build:
+      context: ./consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      CDC_GENERATION: ${CDC_GENERATION:-g001}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-sqlite-projector-g001}
+      KAFKA_CUSTOMERS_TOPIC: ${KAFKA_CUSTOMERS_TOPIC:-cdc.g001.public.customers}
+      KAFKA_ORDERS_TOPIC: ${KAFKA_ORDERS_TOPIC:-cdc.g001.public.orders}
+      KAFKA_PAYMENTS_TOPIC: ${KAFKA_PAYMENTS_TOPIC:-cdc.g001.public.payments}
+      SQLITE_SINK_PATH: ${SQLITE_SINK_PATH:-/data/cdc-g001.sqlite3}
+      CDC_POLL_TIMEOUT_SECONDS: "1.0"
+      CDC_MAX_MESSAGES: ${CDC_MAX_MESSAGES:-}
+      CDC_FAULT_AFTER_SQLITE_COMMIT_AT: ${CDC_FAULT_AFTER_SQLITE_COMMIT_AT:-}
+    volumes:
+      - consumer-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cpus: 0.5
+    mem_limit: 512m
+    mem_reservation: 128m
+    pids_limit: 128
+
 volumes:
   postgres-data:
     labels:
@@ -168,6 +198,10 @@ volumes:
     labels:
       io.kafka-debezium-cdc.generation: g001
       io.kafka-debezium-cdc.purpose: connect-logs
+  consumer-data:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
+      io.kafka-debezium-cdc.purpose: consumer-data
 
 networks:
   cdc-lab:
