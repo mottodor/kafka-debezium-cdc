@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 import pathlib
+import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -166,8 +170,11 @@ class RunnerTests(unittest.TestCase):
             consumer_block,
         )
         lab_text = (PROJECT_ROOT / "scripts" / "lab").read_text()
-        self.assertIn("scripts/lab migrate g001", lab_text)
-        self.assertIn('[[ "$(service_state consumer)" != "running" ]]', lab_text)
+        self.assertIn("scripts/lab migrate <gNNN>", lab_text)
+        self.assertIn(
+            '[[ "$(generation_consumer_state "$generation")" != "running" ]]',
+            lab_text,
+        )
         self.assertIn("--network none", lab_text)
         self.assertIn("--target-version 2", lab_text)
         for heading in (
@@ -194,6 +201,146 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("SQLITE_MAX_BYTES = 1024 * 1024 * 1024", runner_text)
         self.assertIn("SQLITE_STOP_HEADROOM_BYTES = 16 * 1024 * 1024", runner_text)
         self.assertIn("target_version=BASE_SCHEMA_VERSION", runner_text)
+
+    def test_recovery_generation_contract_is_isolated_and_bounded(self) -> None:
+        def parse_env(path: pathlib.Path) -> dict[str, str]:
+            return {
+                key: value
+                for line in path.read_text().splitlines()
+                if line and not line.startswith("#")
+                for key, value in (line.split("=", 1),)
+            }
+
+        old_env = parse_env(PROJECT_ROOT / "config" / "generations" / "g001.env")
+        new_env = parse_env(PROJECT_ROOT / "config" / "generations" / "g002.env")
+        expected_new = {
+            "CDC_GENERATION_ID": "g002",
+            "POSTGRES_DATABASE": "cdc_lab",
+            "POSTGRES_SCHEMA": "public",
+            "POSTGRES_CONNECTOR_USER": "cdc_connector",
+            "DEBEZIUM_CONNECTOR_NAME": "postgres-cdc-g002",
+            "POSTGRES_REPLICATION_SLOT": "postgres_cdc_g002",
+            "POSTGRES_PUBLICATION": "postgres_cdc_g002_pub",
+            "KAFKA_TOPIC_PREFIX": "cdc.g002",
+            "KAFKA_CUSTOMERS_TOPIC": "cdc.g002.public.customers",
+            "KAFKA_ORDERS_TOPIC": "cdc.g002.public.orders",
+            "KAFKA_PAYMENTS_TOPIC": "cdc.g002.public.payments",
+            "KAFKA_CONSUMER_GROUP": "sqlite-projector-g002",
+            "SQLITE_SINK_PATH": "/data/cdc-g002.sqlite3",
+        }
+        self.assertEqual(new_env, expected_new)
+        for key in (
+            "DEBEZIUM_CONNECTOR_NAME",
+            "POSTGRES_REPLICATION_SLOT",
+            "POSTGRES_PUBLICATION",
+            "KAFKA_TOPIC_PREFIX",
+            "KAFKA_CONSUMER_GROUP",
+            "SQLITE_SINK_PATH",
+        ):
+            self.assertNotEqual(old_env[key], new_env[key])
+
+        connector = json.loads(
+            (PROJECT_ROOT / "config" / "connect" / "g002" / "postgres-cdc.json").read_text()
+        )
+        config = connector["config"]
+        self.assertEqual(connector["name"], new_env["DEBEZIUM_CONNECTOR_NAME"])
+        self.assertEqual(config["slot.name"], new_env["POSTGRES_REPLICATION_SLOT"])
+        self.assertEqual(config["publication.name"], new_env["POSTGRES_PUBLICATION"])
+        self.assertEqual(config["topic.prefix"], new_env["KAFKA_TOPIC_PREFIX"])
+        self.assertEqual(config["snapshot.mode"], "initial")
+        self.assertEqual(config["slot.drop.on.stop"], "false")
+        self.assertEqual(config["publication.autocreate.mode"], "disabled")
+
+        lab_text = (PROJECT_ROOT / "scripts" / "lab").read_text()
+        common_text = (PROJECT_ROOT / "scripts" / "lib" / "common.sh").read_text()
+        for marker in (
+            'stop_connector "$previous"',
+            '"Content-Type": "application/json"',
+            'old_checksum_before="$(sink_files_checksum "$previous")"',
+            'old_checksum_after="$(sink_files_checksum "$previous")"',
+            '[[ "$old_checksum_after" == "$old_checksum_before" ]]',
+            'sleep 5',
+            'wait_for_recovery_checkpoint "$generation"',
+            'verify_connector_stopped "$previous"',
+            'required_snapshot_tables = {"customers", "orders", "payments"}',
+            'write_recovery_manifest IN_PROGRESS preparing',
+            'mark_recovery_manifest_failed "$generation"',
+            'archive_generation_sink "$previous" "$generation"',
+            'write_recovery_manifest ACTIVE complete',
+            'require_generation_not_archived "$generation"',
+            'require_no_successor_generation_resources "$generation"',
+            'recovery manifest exists for successor generation',
+            '.cdc-generation-archived.json',
+            'io.kafka-debezium-cdc.role=generation-consumer',
+            'if [[ "$state" == "running" ]]; then\n      return 0',
+            '--network none',
+        ):
+            self.assertIn(marker, lab_text)
+        self.assertGreaterEqual(lab_text.count('chmod 0644 "$output"'), 4)
+        self.assertNotIn("intentionally unavailable until R-08", lab_text)
+        self.assertIn("generation_predecessor()", common_text)
+        self.assertIn('local generation="$DEFAULT_GENERATION"', common_text)
+
+    def test_destroy_refuses_active_or_failed_successor_before_docker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            shutil.copytree(PROJECT_ROOT / "scripts", root / "scripts")
+            (root / "config" / "generations").mkdir(parents=True)
+            shutil.copy2(
+                PROJECT_ROOT / "config" / "generations" / "g001.env",
+                root / "config" / "generations" / "g001.env",
+            )
+            manifest = root / ".runtime" / "generations" / "g002" / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            marker = root / "docker-called"
+            docker = fake_bin / "docker"
+            docker.write_text(
+                "#!/bin/sh\n"
+                'printf called >"$FAKE_DOCKER_MARKER"\n'
+                "exit 99\n"
+            )
+            docker.chmod(0o755)
+            environment = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "FAKE_DOCKER_MARKER": str(marker),
+            }
+
+            for state in ("ACTIVE", "FAILED"):
+                with self.subTest(state=state):
+                    marker.unlink(missing_ok=True)
+                    manifest.write_text(
+                        json.dumps(
+                            {
+                                "state": state,
+                                "previous_generation": "g001",
+                                "new_generation": "g002",
+                            }
+                        )
+                    )
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "scripts/lab",
+                            "destroy",
+                            "g001",
+                            "--confirm",
+                            "g001",
+                        ],
+                        cwd=root,
+                        env=environment,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 65, result.stderr)
+                    self.assertIn(
+                        "recovery manifest exists for successor generation g002",
+                        result.stderr,
+                    )
+                    self.assertFalse(marker.exists(), "destroy reached Docker")
 
     def setUp(self) -> None:
         temporary_directory = tempfile.TemporaryDirectory()

@@ -12,11 +12,11 @@ Usage:
   scripts/lab pull
   scripts/lab up
   scripts/lab bootstrap g001
-  scripts/lab migrate g001
-  scripts/lab status g001
-  scripts/lab lag g001
+  scripts/lab migrate <gNNN>
+  scripts/lab status <gNNN>
+  scripts/lab lag <gNNN>
   scripts/lab stop
-  scripts/lab new-generation g002
+  scripts/lab new-generation <gNNN>
   scripts/lab destroy g001 --confirm g001
 
 Network/dependency action: pull
@@ -104,8 +104,34 @@ up_services() {
   compose up --detach --wait --pull never --no-build postgres kafka connect
 }
 
+generation_exec() {
+  (($# >= 3)) || fail "generation_exec requires generation, service and command" 64
+  local generation="$1"
+  local service="$2"
+  local file
+  shift 2
+  require_generation_contract "$generation"
+  file="$(generation_file "$generation")"
+  compose exec --no-TTY \
+    --env "CDC_GENERATION_ID=$(read_env_value "$file" CDC_GENERATION_ID)" \
+    --env "POSTGRES_DATABASE=$(read_env_value "$file" POSTGRES_DATABASE)" \
+    --env "POSTGRES_SCHEMA=$(read_env_value "$file" POSTGRES_SCHEMA)" \
+    --env "POSTGRES_CONNECTOR_USER=$(read_env_value "$file" POSTGRES_CONNECTOR_USER)" \
+    --env "DEBEZIUM_CONNECTOR_NAME=$(read_env_value "$file" DEBEZIUM_CONNECTOR_NAME)" \
+    --env "POSTGRES_REPLICATION_SLOT=$(read_env_value "$file" POSTGRES_REPLICATION_SLOT)" \
+    --env "POSTGRES_PUBLICATION=$(read_env_value "$file" POSTGRES_PUBLICATION)" \
+    --env "KAFKA_TOPIC_PREFIX=$(read_env_value "$file" KAFKA_TOPIC_PREFIX)" \
+    --env "KAFKA_CUSTOMERS_TOPIC=$(read_env_value "$file" KAFKA_CUSTOMERS_TOPIC)" \
+    --env "KAFKA_ORDERS_TOPIC=$(read_env_value "$file" KAFKA_ORDERS_TOPIC)" \
+    --env "KAFKA_PAYMENTS_TOPIC=$(read_env_value "$file" KAFKA_PAYMENTS_TOPIC)" \
+    --env "KAFKA_CONSUMER_GROUP=$(read_env_value "$file" KAFKA_CONSUMER_GROUP)" \
+    --env "SQLITE_SINK_PATH=$(read_env_value "$file" SQLITE_SINK_PATH)" \
+    "$service" "$@"
+}
+
 connector_registration_state() {
-  compose exec --no-TTY connect python3 - <<'PY'
+  local generation="${1:-$DEFAULT_GENERATION}"
+  generation_exec "$generation" connect python3 - <<'PY'
 import os
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -163,13 +189,16 @@ bootstrap_generation() {
   (($# == 1)) || fail "usage: scripts/lab bootstrap g001" 64
   local generation="$1"
   local registration_state
+  [[ "$generation" == "$DEFAULT_GENERATION" ]] \
+    || fail "bootstrap is reserved for initial generation $DEFAULT_GENERATION; use new-generation for recovery" 65
   require_generation_contract "$generation"
+  require_generation_not_archived "$generation"
   require_running_service postgres
   require_running_service kafka
   require_running_service connect
 
   set +e
-  connector_registration_state
+  connector_registration_state "$generation"
   registration_state=$?
   set -e
   case "$registration_state" in
@@ -198,7 +227,8 @@ bootstrap_generation() {
 }
 
 connector_status() {
-  compose exec --no-TTY connect python3 - <<'PY'
+  local generation="$1"
+  generation_exec "$generation" connect python3 - <<'PY'
 import json
 import os
 import sys
@@ -220,8 +250,8 @@ print(json.dumps(payload, indent=2, sort_keys=True))
 PY
 }
 
-sink_status() {
-  compose exec --no-TTY consumer python - <<'PY'
+sink_status_program() {
+  cat <<'PY'
 import json
 import os
 import sqlite3
@@ -248,6 +278,10 @@ if generation != (os.environ["CDC_GENERATION"],):
     raise SystemExit("SQLite sink generation does not match runtime generation")
 print(json.dumps({"generation": generation[0], "counts": counts}, sort_keys=True))
 PY
+}
+
+sink_status() {
+  run_sink_readonly_program "$1" sink_status_program
 }
 
 event_age_program() {
@@ -316,26 +350,70 @@ if status == "STOP":
 PY
 }
 
+generation_consumer_volume_name() {
+  local generation="$1"
+  if [[ "$generation" == "$DEFAULT_GENERATION" ]]; then
+    printf '%s_consumer-data\n' "$COMPOSE_PROJECT"
+  else
+    printf 'cdc-lab-%s-consumer-data\n' "$generation"
+  fi
+}
+
+generation_consumer_container_name() {
+  local generation="$1"
+  if [[ "$generation" == "$DEFAULT_GENERATION" ]]; then
+    printf '%s-consumer-1\n' "$COMPOSE_PROJECT"
+  else
+    printf 'cdc-lab-%s-consumer\n' "$generation"
+  fi
+}
+
+generation_consumer_state() {
+  local generation="$1"
+  local container
+  if [[ "$generation" == "$DEFAULT_GENERATION" ]]; then
+    service_state consumer
+    return
+  fi
+  container="$(generation_consumer_container_name "$generation")"
+  if ! docker inspect "$container" >/dev/null 2>&1; then
+    printf 'missing\n'
+    return
+  fi
+  docker inspect --format '{{.State.Status}}' "$container"
+}
+
 verify_consumer_volume_scope() {
   local generation="$1"
-  local volume="${COMPOSE_PROJECT}_consumer-data"
-  local project_label generation_label
+  local volume generation_label purpose_label project_label lab_label
+  require_generation_contract "$generation"
+  volume="$(generation_consumer_volume_name "$generation")"
   docker volume inspect "$volume" >/dev/null 2>&1 \
     || fail "consumer sink volume is unavailable: $volume" 69
-  project_label="$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$volume")"
   generation_label="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.generation"}}' "$volume")"
-  [[ "$project_label" == "$COMPOSE_PROJECT" && "$generation_label" == "$generation" ]] \
+  purpose_label="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.purpose"}}' "$volume")"
+  [[ "$generation_label" == "$generation" && "$purpose_label" == "consumer-data" ]] \
     || fail "consumer sink volume is outside exact generation scope" 65
+  if [[ "$generation" == "$DEFAULT_GENERATION" ]]; then
+    project_label="$(docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' "$volume")"
+    [[ "$project_label" == "$COMPOSE_PROJECT" ]] \
+      || fail "initial consumer sink volume has unexpected Compose project label" 65
+  else
+    lab_label="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.lab"}}' "$volume")"
+    [[ "$lab_label" == "cdc-lab" ]] \
+      || fail "recovery consumer sink volume has unexpected lab label" 65
+  fi
   printf '%s\n' "$volume"
 }
 
 migrate_sink() {
-  (($# == 1)) || fail "usage: scripts/lab migrate g001" 64
+  (($# == 1)) || fail "usage: scripts/lab migrate <gNNN>" 64
   local generation="$1"
   local volume
   require_generation_contract "$generation"
-  [[ "$(service_state consumer)" != "running" ]] \
-    || fail "stop the consumer before applying the SQLite schema migration" 65
+  require_generation_not_archived "$generation"
+  [[ "$(generation_consumer_state "$generation")" != "running" ]] \
+    || fail "stop the generation consumer before applying the SQLite schema migration" 65
   docker image inspect "$CONSUMER_IMAGE" >/dev/null 2>&1 \
     || fail "consumer image is unavailable; run scripts/lab pull" 69
   volume="$(verify_consumer_volume_scope "$generation")"
@@ -355,9 +433,14 @@ migrate_sink() {
 run_sink_readonly_program() {
   local generation="$1"
   local program_function="$2"
-  local volume
-  if [[ "$(service_state consumer)" == "running" ]]; then
-    "$program_function" | compose exec --no-TTY consumer python -
+  local volume container
+  if [[ "$(generation_consumer_state "$generation")" == "running" ]]; then
+    if [[ "$generation" == "$DEFAULT_GENERATION" ]]; then
+      "$program_function" | compose exec --no-TTY consumer python -
+    else
+      container="$(generation_consumer_container_name "$generation")"
+      "$program_function" | docker exec --interactive "$container" python -
+    fi
     return
   fi
 
@@ -368,6 +451,7 @@ run_sink_readonly_program() {
     --network none \
     --read-only \
     --volume "$volume:/data:ro" \
+    --env "CDC_GENERATION=$generation" \
     --env "SQLITE_SINK_PATH=/data/cdc-${generation}.sqlite3" \
     "$CONSUMER_IMAGE" \
     python -
@@ -382,17 +466,18 @@ sink_sqlite_size() {
 }
 
 status_generation() {
-  (($# == 1)) || fail "usage: scripts/lab status g001" 64
+  (($# == 1)) || fail "usage: scripts/lab status <gNNN>" 64
   local generation="$1"
   require_generation_contract "$generation"
-  printf '%s\n' '--- compose services ---'
+  printf '%s\n' '--- core compose services ---'
   compose ps --all
   require_running_service postgres
   require_running_service kafka
   require_running_service connect
-  require_running_service consumer
+  [[ "$(generation_consumer_state "$generation")" == "running" ]] \
+    || fail "generation consumer is not running: $generation" 69
   printf '%s\n' '--- connector ---'
-  connector_status
+  connector_status "$generation"
   printf '%s\n' '--- table topics ---'
   local topics expected_topics
   topics="$(
@@ -417,11 +502,11 @@ status_generation() {
     --describe \
     --group "sqlite-projector-${generation}"
   printf '%s\n' '--- SQLite sink ---'
-  sink_status
+  sink_status "$generation"
 }
 
 lag_generation() {
-  (($# == 1)) || fail "usage: scripts/lab lag g001" 64
+  (($# == 1)) || fail "usage: scripts/lab lag <gNNN>" 64
   local generation="$1"
   require_generation_contract "$generation"
   require_running_service postgres
@@ -437,18 +522,18 @@ lag_generation() {
   sink_event_age "$generation"
 
   printf '%s\n' '--- postgres_replication_slot_retained_wal ---'
-  local slot_line
+  local slot_line expected_slot
+  expected_slot="$(generation_value "$generation" POSTGRES_REPLICATION_SLOT)"
   slot_line="$(
-    compose exec --no-TTY postgres bash -Eeuo pipefail -c '
-      psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --no-psqlrc \
-        --tuples-only --no-align --field-separator="|" \
-        --command="SELECT slot_name, wal_status, COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0)::bigint AS retained_wal_bytes, safe_wal_size, CASE WHEN COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0) >= 536870912 THEN '\''WARNING'\'' ELSE '\''OK'\'' END AS threshold_512_mib FROM pg_replication_slots WHERE slot_name = '\''postgres_cdc_g001'\'';"
-    '
+    generation_exec "$generation" postgres psql \
+      --username cdc_admin --dbname cdc_lab --no-psqlrc \
+      --tuples-only --no-align --field-separator='|' \
+      --command="SELECT slot_name, wal_status, COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0)::bigint AS retained_wal_bytes, safe_wal_size, CASE WHEN COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0) >= 536870912 THEN 'WARNING' ELSE 'OK' END AS threshold_512_mib FROM pg_replication_slots WHERE slot_name = '$expected_slot';"
   )"
-  validate_replication_slot_metric "$slot_line" postgres_cdc_g001
+  validate_replication_slot_metric "$slot_line" "$expected_slot"
 
   printf '%s\n' '--- kafka_topic_retention_bounds ---'
-  compose exec --no-TTY kafka /opt/cdc/kafka/bootstrap-topics.sh --verify-only
+  generation_exec "$generation" kafka /opt/cdc/kafka/bootstrap-topics.sh --verify-only
 
   printf '%s\n' '--- sqlite_sink_size_guard ---'
   sink_sqlite_size "$generation"
@@ -457,19 +542,752 @@ lag_generation() {
 stop_services() {
   require_no_arguments "$@"
   require_command docker
-  printf 'stopping project services; volumes, network, connector offsets, slot and SQLite sink are preserved\n'
+  local container
+  printf 'stopping project services and generation consumers; volumes, network, connector offsets, slots and SQLite sinks are preserved\n'
   compose stop
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    docker stop "$container" >/dev/null
+  done < <(
+    docker ps --quiet \
+      --filter 'label=io.kafka-debezium-cdc.lab=cdc-lab' \
+      --filter 'label=io.kafka-debezium-cdc.role=generation-consumer'
+  )
+}
+
+stop_connector() {
+  local generation="$1"
+  generation_exec "$generation" connect python3 - <<'PY'
+import json
+import os
+import sys
+import time
+from urllib.error import HTTPError
+from urllib.parse import quote
+from urllib.request import ProxyHandler, Request, build_opener
+
+name = os.environ["DEBEZIUM_CONNECTOR_NAME"]
+encoded = quote(name, safe="")
+opener = build_opener(ProxyHandler({}))
+request = Request(
+    f"http://127.0.0.1:8083/connectors/{encoded}/stop",
+    data=b"{}",
+    headers={"Accept": "application/json", "Content-Type": "application/json"},
+    method="PUT",
+)
+try:
+    with opener.open(request, timeout=10) as response:
+        if response.status not in {202, 204}:
+            raise SystemExit(f"unexpected stop response for {name}: {response.status}")
+except HTTPError as error:
+    if error.code not in {202, 204}:
+        raise
+
+for _ in range(60):
+    with opener.open(
+        f"http://127.0.0.1:8083/connectors/{encoded}/status", timeout=10
+    ) as response:
+        payload = json.load(response)
+    connector_state = (payload.get("connector") or {}).get("state")
+    task_states = {
+        task.get("state") for task in payload.get("tasks", []) if isinstance(task, dict)
+    }
+    if connector_state == "STOPPED" and not task_states:
+        print(f"stopped connector: {name}")
+        raise SystemExit(0)
+    if connector_state == "FAILED" or "FAILED" in task_states:
+        print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+        raise SystemExit(f"connector failed while stopping: {name}")
+    time.sleep(1)
+raise SystemExit(f"connector did not reach STOPPED state: {name}")
+PY
+}
+
+verify_connector_stopped() {
+  local generation="$1"
+  generation_exec "$generation" connect python3 - <<'PY'
+import json
+import os
+from urllib.parse import quote
+from urllib.request import ProxyHandler, build_opener
+
+name = os.environ["DEBEZIUM_CONNECTOR_NAME"]
+opener = build_opener(ProxyHandler({}))
+with opener.open(
+    f"http://127.0.0.1:8083/connectors/{quote(name, safe='')}/status", timeout=10
+) as response:
+    payload = json.load(response)
+connector_state = (payload.get("connector") or {}).get("state")
+task_states = {
+    task.get("state") for task in payload.get("tasks", []) if isinstance(task, dict)
+}
+if connector_state != "STOPPED" or task_states:
+    raise SystemExit(f"connector is not stopped: {name}: {payload!r}")
+print(f"connector={name} state=STOPPED")
+PY
+}
+
+ensure_generation_publication() {
+  local generation="$1"
+  local publication observed expected
+  publication="$(generation_value "$generation" POSTGRES_PUBLICATION)"
+  if ! generation_exec "$generation" postgres psql \
+    --username cdc_admin --dbname cdc_lab --no-psqlrc \
+    --tuples-only --no-align \
+    --command="SELECT 1 FROM pg_catalog.pg_publication WHERE pubname = '$publication';" \
+    | grep -qx 1; then
+    generation_exec "$generation" postgres psql \
+      --username cdc_admin --dbname cdc_lab --no-psqlrc --set ON_ERROR_STOP=1 \
+      --command="CREATE PUBLICATION $publication FOR TABLE public.customers, public.orders, public.payments;"
+  fi
+  observed="$(
+    generation_exec "$generation" postgres psql \
+      --username cdc_admin --dbname cdc_lab --no-psqlrc \
+      --tuples-only --no-align --field-separator='|' \
+      --command="SELECT p.pubname, pg_get_userbyid(p.pubowner), p.puballtables, p.pubinsert, p.pubupdate, p.pubdelete, p.pubtruncate, p.pubviaroot, (SELECT string_agg(format('%I.%I:%s:%s', n.nspname, c.relname, coalesce(pr.prattrs::text, '-'), coalesce(pg_get_expr(pr.prqual, pr.prrelid, true), '-')), ',' ORDER BY n.nspname, c.relname) FROM pg_catalog.pg_publication_rel pr JOIN pg_catalog.pg_class c ON c.oid = pr.prrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE pr.prpubid = p.oid) FROM pg_catalog.pg_publication p WHERE p.pubname = '$publication';"
+  )"
+  expected="$publication|cdc_admin|f|t|t|t|t|f|public.customers:-:-,public.orders:-:-,public.payments:-:-"
+  [[ "$observed" == "$expected" ]] \
+    || fail "publication contract mismatch for $publication" 65
+  printf 'verified publication=%s tables=3 owner=cdc_admin\n' "$publication"
+}
+
+bootstrap_generation_topics() {
+  generation_exec "$1" kafka /opt/cdc/kafka/bootstrap-topics.sh
+}
+
+register_generation_connector() {
+  local generation="$1"
+  local config="/opt/cdc/connect/$generation/postgres-cdc.json"
+  [[ -f "$PROJECT_ROOT/config/connect/$generation/postgres-cdc.json" ]] \
+    || fail "connector config is missing for generation $generation" 66
+  generation_exec "$generation" connect env \
+    "CONNECTOR_CONFIG_FILE=$config" \
+    python3 /opt/cdc/connect/register-connector.py
+}
+
+ensure_recovery_consumer_volume() {
+  local generation="$1"
+  local volume
+  volume="$(generation_consumer_volume_name "$generation")"
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    docker volume create \
+      --label io.kafka-debezium-cdc.lab=cdc-lab \
+      --label "io.kafka-debezium-cdc.generation=$generation" \
+      --label io.kafka-debezium-cdc.purpose=consumer-data \
+      "$volume" >/dev/null
+  fi
+  verify_consumer_volume_scope "$generation" >/dev/null
+  printf '%s\n' "$volume"
+}
+
+source_schema_target_version() {
+  local generation="$1"
+  local has_phone
+  has_phone="$(
+    generation_exec "$generation" postgres psql \
+      --username cdc_admin --dbname cdc_lab --no-psqlrc \
+      --tuples-only --no-align \
+      --command="SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'customers' AND column_name = 'phone';"
+  )"
+  case "$has_phone" in
+    0) printf '1\n' ;;
+    1) printf '2\n' ;;
+    *) fail "cannot determine source schema target version" 65 ;;
+  esac
+}
+
+migrate_recovery_sink() {
+  local generation="$1"
+  local volume target_version
+  volume="$(ensure_recovery_consumer_volume "$generation")"
+  target_version="$(source_schema_target_version "$generation")"
+  docker run --rm \
+    --network none \
+    --read-only \
+    --volume "$volume:/data" \
+    "$CONSUMER_IMAGE" \
+    python -m cdc_consumer.migrations \
+      --database "/data/cdc-${generation}.sqlite3" \
+      --generation "$generation" \
+      --target-version "$target_version"
+}
+
+verify_recovery_consumer_scope() {
+  local generation="$1"
+  local allow_stale_image="${2:-false}"
+  local container volume generation_label role_label lab_label image_name network_name
+  local mounted_volume read_only restart_policy image_id current_image_id resources
+  local actual_env expected_env file
+  container="$(generation_consumer_container_name "$generation")"
+  volume="$(generation_consumer_volume_name "$generation")"
+  file="$(generation_file "$generation")"
+  docker inspect "$container" >/dev/null 2>&1 \
+    || fail "recovery consumer container is unavailable: $container" 69
+  generation_label="$(docker inspect --format '{{index .Config.Labels "io.kafka-debezium-cdc.generation"}}' "$container")"
+  role_label="$(docker inspect --format '{{index .Config.Labels "io.kafka-debezium-cdc.role"}}' "$container")"
+  lab_label="$(docker inspect --format '{{index .Config.Labels "io.kafka-debezium-cdc.lab"}}' "$container")"
+  image_name="$(docker inspect --format '{{.Config.Image}}' "$container")"
+  image_id="$(docker inspect --format '{{.Image}}' "$container")"
+  current_image_id="$(docker image inspect --format '{{.Id}}' "$CONSUMER_IMAGE")"
+  network_name="$(docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' "$container")"
+  mounted_volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "$container")"
+  read_only="$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$container")"
+  restart_policy="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$container")"
+  resources="$(docker inspect --format '{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.PidsLimit}}' "$container")"
+  actual_env="$(
+    docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" \
+      | grep -E '^(CDC_GENERATION|KAFKA_BOOTSTRAP_SERVERS|KAFKA_CONSUMER_GROUP|KAFKA_CUSTOMERS_TOPIC|KAFKA_ORDERS_TOPIC|KAFKA_PAYMENTS_TOPIC|SQLITE_SINK_PATH|CDC_POLL_TIMEOUT_SECONDS)=' \
+      | sort
+  )"
+  expected_env="$(
+    printf '%s\n' \
+      "CDC_GENERATION=$generation" \
+      'KAFKA_BOOTSTRAP_SERVERS=kafka:9092' \
+      "KAFKA_CONSUMER_GROUP=$(read_env_value "$file" KAFKA_CONSUMER_GROUP)" \
+      "KAFKA_CUSTOMERS_TOPIC=$(read_env_value "$file" KAFKA_CUSTOMERS_TOPIC)" \
+      "KAFKA_ORDERS_TOPIC=$(read_env_value "$file" KAFKA_ORDERS_TOPIC)" \
+      "KAFKA_PAYMENTS_TOPIC=$(read_env_value "$file" KAFKA_PAYMENTS_TOPIC)" \
+      "SQLITE_SINK_PATH=$(read_env_value "$file" SQLITE_SINK_PATH)" \
+      'CDC_POLL_TIMEOUT_SECONDS=1.0' \
+      | sort
+  )"
+  [[ "$generation_label" == "$generation" \
+     && "$role_label" == "generation-consumer" \
+     && "$lab_label" == "cdc-lab" \
+     && "$image_name" == "$CONSUMER_IMAGE" \
+     && "$network_name" == "${COMPOSE_PROJECT}_cdc-lab" \
+     && "$mounted_volume" == "$volume" \
+     && "$read_only" == true \
+     && "$restart_policy" == no \
+     && "$resources" == '500000000|536870912|128' \
+     && "$actual_env" == "$expected_env" ]] \
+    || fail "recovery consumer container is outside exact generation scope" 65
+  [[ "$allow_stale_image" == true || "$image_id" == "$current_image_id" ]] \
+    || fail "recovery consumer container uses a stale image" 65
+}
+
+ensure_recovery_consumer() {
+  local generation="$1"
+  local container volume state
+  local file
+  container="$(generation_consumer_container_name "$generation")"
+  volume="$(ensure_recovery_consumer_volume "$generation")"
+  file="$(generation_file "$generation")"
+  if docker inspect "$container" >/dev/null 2>&1; then
+    verify_recovery_consumer_scope "$generation" true
+    state="$(docker inspect --format '{{.State.Status}}' "$container")"
+    if [[ "$(docker inspect --format '{{.Image}}' "$container")" \
+      != "$(docker image inspect --format '{{.Id}}' "$CONSUMER_IMAGE")" ]]; then
+      [[ "$state" != "running" ]] || docker stop "$container" >/dev/null
+      docker rm "$container" >/dev/null
+    elif [[ "$state" == "running" ]]; then
+      return 0
+    else
+      docker start "$container" >/dev/null
+      verify_recovery_consumer_scope "$generation"
+      return 0
+    fi
+  fi
+  if ! docker inspect "$container" >/dev/null 2>&1; then
+    docker run --detach \
+      --init \
+      --name "$container" \
+      --network "${COMPOSE_PROJECT}_cdc-lab" \
+      --restart no \
+      --label io.kafka-debezium-cdc.lab=cdc-lab \
+      --label io.kafka-debezium-cdc.role=generation-consumer \
+      --label "io.kafka-debezium-cdc.generation=$generation" \
+      --volume "$volume:/data" \
+      --read-only \
+      --tmpfs /tmp:size=64m \
+      --cpus 0.5 \
+      --memory 512m \
+      --pids-limit 128 \
+      --env "CDC_GENERATION=$generation" \
+      --env KAFKA_BOOTSTRAP_SERVERS=kafka:9092 \
+      --env "KAFKA_CONSUMER_GROUP=$(read_env_value "$file" KAFKA_CONSUMER_GROUP)" \
+      --env "KAFKA_CUSTOMERS_TOPIC=$(read_env_value "$file" KAFKA_CUSTOMERS_TOPIC)" \
+      --env "KAFKA_ORDERS_TOPIC=$(read_env_value "$file" KAFKA_ORDERS_TOPIC)" \
+      --env "KAFKA_PAYMENTS_TOPIC=$(read_env_value "$file" KAFKA_PAYMENTS_TOPIC)" \
+      --env "SQLITE_SINK_PATH=$(read_env_value "$file" SQLITE_SINK_PATH)" \
+      --env CDC_POLL_TIMEOUT_SECONDS=1.0 \
+      "$CONSUMER_IMAGE" >/dev/null
+  fi
+  verify_recovery_consumer_scope "$generation"
+}
+
+wait_for_generation_consumer() {
+  local generation="$1"
+  local container state
+  container="$(generation_consumer_container_name "$generation")"
+  for ((attempt = 1; attempt <= 60; attempt += 1)); do
+    state="$(generation_consumer_state "$generation")"
+    case "$state" in
+      running) return ;;
+      exited|dead)
+        docker logs --tail 30 "$container" >&2 || true
+        fail "generation consumer stopped before recovery verification: $generation" 1
+        ;;
+    esac
+    sleep 1
+  done
+  fail "generation consumer did not start: $generation" 1
+}
+
+sink_files_checksum() {
+  local generation="$1"
+  local volume
+  volume="$(verify_consumer_volume_scope "$generation")"
+  docker run --rm --interactive --network none --read-only \
+    --volume "$volume:/data:ro" \
+    --env "SINK_PREFIX=/data/cdc-${generation}.sqlite3" \
+    "$CONSUMER_IMAGE" python - <<'PY'
+import glob
+import hashlib
+import json
+import os
+
+paths = sorted(glob.glob(os.environ["SINK_PREFIX"] + "*"))
+if not paths:
+    raise SystemExit("generation sink files are missing")
+result = {}
+for path in paths:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    result[os.path.basename(path)] = digest.hexdigest()
+print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+generation_is_archived() {
+  local generation="$1"
+  local volume
+  volume="$(generation_consumer_volume_name "$generation")"
+  docker volume inspect "$volume" >/dev/null 2>&1 || return 1
+  docker run --rm --network none --read-only \
+    --volume "$volume:/data:ro" \
+    "$CONSUMER_IMAGE" \
+    python -c 'from pathlib import Path; raise SystemExit(0 if Path("/data/.cdc-generation-archived.json").is_file() else 1)'
+}
+
+require_generation_not_archived() {
+  local generation="$1"
+  if generation_is_archived "$generation"; then
+    fail "generation $generation is archived read-only and cannot be bootstrapped or migrated" 65
+  fi
+}
+
+archive_generation_sink() {
+  local generation="$1"
+  local successor="$2"
+  local volume
+  volume="$(verify_consumer_volume_scope "$generation")"
+  docker run --rm --interactive --network none --read-only --user 0 \
+    --volume "$volume:/data" \
+    --env "ARCHIVED_GENERATION=$generation" \
+    --env "ACTIVE_SUCCESSOR=$successor" \
+    "$CONSUMER_IMAGE" python - <<'PY'
+import json
+import os
+import stat
+from datetime import datetime, timezone
+from pathlib import Path
+
+root = Path("/data")
+marker = root / ".cdc-generation-archived.json"
+marker.write_text(
+    json.dumps(
+        {
+            "active_successor": os.environ["ACTIVE_SUCCESSOR"],
+            "archived_generation": os.environ["ARCHIVED_GENERATION"],
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+            "state": "ARCHIVED_READ_ONLY",
+        },
+        indent=2,
+        sort_keys=True,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+for path in sorted(root.rglob("*"), reverse=True):
+    path.chmod(stat.S_IMODE(path.stat().st_mode) & ~0o222)
+root.chmod(stat.S_IMODE(root.stat().st_mode) & ~0o222)
+PY
+  docker run --rm --interactive --network none --read-only \
+    --volume "$volume:/data" \
+    --env "SINK_PATH=/data/cdc-${generation}.sqlite3" \
+    "$CONSUMER_IMAGE" python - <<'PY'
+import os
+import sqlite3
+from pathlib import Path
+
+marker = Path("/data/.cdc-generation-archived.json")
+if not marker.is_file():
+    raise SystemExit("archive marker is missing")
+connection = sqlite3.connect(f"file:{os.environ['SINK_PATH']}?mode=ro", uri=True)
+try:
+    connection.execute("SELECT generation FROM sink_metadata WHERE singleton = 1").fetchone()
+finally:
+    connection.close()
+probe = Path("/data/.write-probe")
+try:
+    probe.write_text("must fail", encoding="utf-8")
+except PermissionError:
+    print("archived sink read-only probe=PASS")
+else:
+    probe.unlink(missing_ok=True)
+    raise SystemExit("archived sink remains writable by consumer UID")
+PY
+}
+
+consumer_group_lag_zero() {
+  local generation="$1"
+  local output
+  output="$(
+    compose exec --no-TTY kafka /kafka/bin/kafka-consumer-groups.sh \
+      --bootstrap-server 127.0.0.1:9092 \
+      --describe \
+      --group "$(generation_value "$generation" KAFKA_CONSUMER_GROUP)"
+  )"
+  awk -v prefix="cdc.${generation}.public." '
+    $2 == prefix "customers" || $2 == prefix "orders" || $2 == prefix "payments" {
+      rows += 1
+      if (!(($4 == "-" && $5 == "0" && $6 == "-") || ($4 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ && $6 == "0" && $4 == $5))) {
+        bad += 1
+      }
+    }
+    END { exit !(rows == 9 && bad == 0) }
+  ' <<< "$output" || return 1
+  printf 'generation=%s partitions=9 lag=0\n' "$generation"
+}
+
+source_state_json() {
+  local generation="$1"
+  local phone_expression
+  if [[ "$(source_schema_target_version "$generation")" == 2 ]]; then
+    phone_expression='phone'
+  else
+    phone_expression='NULL::text'
+  fi
+  generation_exec "$generation" postgres psql \
+    --username cdc_admin --dbname cdc_lab --no-psqlrc \
+    --tuples-only --no-align \
+    --command="SELECT jsonb_build_object('customers', (SELECT coalesce(jsonb_agg(jsonb_build_object('id', id::text, 'email', email, 'full_name', full_name, 'status', status, 'phone', $phone_expression, 'created_at_us', (extract(epoch FROM created_at) * 1000000)::bigint::text, 'updated_at_us', (extract(epoch FROM updated_at) * 1000000)::bigint::text) ORDER BY id), '[]'::jsonb) FROM public.customers), 'orders', (SELECT coalesce(jsonb_agg(jsonb_build_object('id', id::text, 'customer_id', customer_id::text, 'status', status, 'total_amount', total_amount::text, 'created_at_us', (extract(epoch FROM created_at) * 1000000)::bigint::text, 'updated_at_us', (extract(epoch FROM updated_at) * 1000000)::bigint::text) ORDER BY id), '[]'::jsonb) FROM public.orders), 'payments', (SELECT coalesce(jsonb_agg(jsonb_build_object('id', id::text, 'order_id', order_id::text, 'status', status, 'amount', amount::text, 'provider_ref', provider_ref, 'created_at_us', (extract(epoch FROM created_at) * 1000000)::bigint::text, 'updated_at_us', (extract(epoch FROM updated_at) * 1000000)::bigint::text) ORDER BY id), '[]'::jsonb) FROM public.payments))::text;"
+}
+
+verify_source_sink_parity() {
+  local generation="$1"
+  local container source_json
+  container="$(generation_consumer_container_name "$generation")"
+  source_json="$(source_state_json "$generation")"
+  docker exec --interactive --env "EXPECTED_SOURCE_JSON=$source_json" "$container" python - <<'PY'
+import datetime as dt
+import json
+import os
+import sqlite3
+
+expected = json.loads(os.environ["EXPECTED_SOURCE_JSON"])
+connection = sqlite3.connect(
+    f"file:{os.environ['SQLITE_SINK_PATH']}?mode=ro", uri=True
+)
+
+def timestamp_us(value: str) -> str:
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise SystemExit(f"projection timestamp is missing timezone: {value}")
+    epoch = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+    delta = parsed.astimezone(dt.timezone.utc) - epoch
+    return str(
+        delta.days * 86_400_000_000
+        + delta.seconds * 1_000_000
+        + delta.microseconds
+    )
+
+try:
+    has_phone = connection.execute(
+        "SELECT count(*) FROM pragma_table_info('customers_current') WHERE name = 'phone'"
+    ).fetchone()[0] == 1
+    customer_columns = "id, email, full_name, status, created_at, updated_at"
+    if has_phone:
+        customer_columns += ", phone"
+    customers = []
+    for row in connection.execute(
+        f"SELECT {customer_columns} FROM customers_current ORDER BY id"
+    ):
+        item = {
+            "id": str(row[0]),
+            "email": row[1],
+            "full_name": row[2],
+            "status": row[3],
+            "created_at_us": timestamp_us(row[4]),
+            "updated_at_us": timestamp_us(row[5]),
+            "phone": row[6] if has_phone else None,
+        }
+        customers.append(item)
+    orders = [
+        {
+            "id": str(row[0]),
+            "customer_id": str(row[1]),
+            "status": row[2],
+            "total_amount": row[3],
+            "created_at_us": timestamp_us(row[4]),
+            "updated_at_us": timestamp_us(row[5]),
+        }
+        for row in connection.execute(
+            "SELECT id, customer_id, status, total_amount, created_at, updated_at "
+            "FROM orders_current ORDER BY id"
+        )
+    ]
+    payments = [
+        {
+            "id": str(row[0]),
+            "order_id": str(row[1]),
+            "status": row[2],
+            "amount": row[3],
+            "provider_ref": row[4],
+            "created_at_us": timestamp_us(row[5]),
+            "updated_at_us": timestamp_us(row[6]),
+        }
+        for row in connection.execute(
+            "SELECT id, order_id, status, amount, provider_ref, created_at, updated_at "
+            "FROM payments_current ORDER BY id"
+        )
+    ]
+    actual = {"customers": customers, "orders": orders, "payments": payments}
+    errors = connection.execute("SELECT count(*) FROM ingestion_errors").fetchone()[0]
+    snapshot_counts = dict(
+        connection.execute(
+            "SELECT source_table, count(*) FROM raw_events "
+            "WHERE operation = 'r' GROUP BY source_table"
+        ).fetchall()
+    )
+finally:
+    connection.close()
+if actual != expected:
+    raise SystemExit(
+        "source/sink parity mismatch: "
+        + json.dumps({"expected": expected, "actual": actual}, sort_keys=True)
+    )
+if errors != 0:
+    raise SystemExit(f"ingestion_errors is not empty: {errors}")
+expected_counts = {table: len(rows) for table, rows in expected.items()}
+required_snapshot_tables = {"customers", "orders", "payments"}
+if set(snapshot_counts) != required_snapshot_tables or any(
+    snapshot_counts[table] <= 0 for table in required_snapshot_tables
+):
+    raise SystemExit(
+        f"initial snapshot evidence is incomplete: actual={snapshot_counts!r}"
+    )
+print(json.dumps({"generation": os.environ["CDC_GENERATION"], "row_counts": expected_counts, "ingestion_errors": errors, "snapshot_counts": snapshot_counts}, sort_keys=True))
+PY
+}
+
+wait_for_recovery_checkpoint() {
+  local generation="$1"
+  for ((attempt = 1; attempt <= 120; attempt += 1)); do
+    if connector_status "$generation" >/dev/null 2>&1 \
+      && consumer_group_lag_zero "$generation" >/dev/null 2>&1 \
+      && verify_source_sink_parity "$generation" >/dev/null 2>&1; then
+      connector_status "$generation" >/dev/null
+      consumer_group_lag_zero "$generation"
+      verify_source_sink_parity "$generation"
+      return
+    fi
+    if [[ "$(generation_consumer_state "$generation")" != "running" ]]; then
+      docker logs --tail 30 "$(generation_consumer_container_name "$generation")" >&2 || true
+      fail "generation consumer stopped during recovery verification" 1
+    fi
+    sleep 1
+  done
+  fail "generation did not reach source parity and lag zero" 1
+}
+
+recovery_manifest_path() {
+  printf '%s/.runtime/generations/%s/manifest.json\n' "$PROJECT_ROOT" "$1"
+}
+
+validate_recovery_manifest_identity() {
+  local previous="$1"
+  local generation="$2"
+  local output
+  output="$(recovery_manifest_path "$generation")"
+  [[ -f "$output" ]] || return 0
+  chmod 0644 "$output"
+  docker run --rm --network none --read-only \
+    --volume "$output:/manifest.json:ro" \
+    --env "PREVIOUS_GENERATION=$previous" \
+    --env "NEW_GENERATION=$generation" \
+    --env "OLD_CONNECTOR=$(generation_value "$previous" DEBEZIUM_CONNECTOR_NAME)" \
+    --env "NEW_CONNECTOR=$(generation_value "$generation" DEBEZIUM_CONNECTOR_NAME)" \
+    --env "OLD_SLOT=$(generation_value "$previous" POSTGRES_REPLICATION_SLOT)" \
+    --env "NEW_SLOT=$(generation_value "$generation" POSTGRES_REPLICATION_SLOT)" \
+    --env "OLD_TOPIC_PREFIX=$(generation_value "$previous" KAFKA_TOPIC_PREFIX)" \
+    --env "NEW_TOPIC_PREFIX=$(generation_value "$generation" KAFKA_TOPIC_PREFIX)" \
+    --env "OLD_GROUP=$(generation_value "$previous" KAFKA_CONSUMER_GROUP)" \
+    --env "NEW_GROUP=$(generation_value "$generation" KAFKA_CONSUMER_GROUP)" \
+    "$CONSUMER_IMAGE" python -c '
+import json, os
+from pathlib import Path
+payload = json.loads(Path("/manifest.json").read_text())
+for key in ("previous_generation", "new_generation", "old_connector", "new_connector", "old_slot", "new_slot", "old_topic_prefix", "new_topic_prefix", "old_group", "new_group"):
+    expected = os.environ[key.upper()]
+    if payload.get(key) != expected:
+        raise SystemExit(f"recovery manifest identity mismatch for {key}")
+print(f"validated recovery manifest state={payload.get('"'"'state'"'"', '"'"'legacy'"'"')} phase={payload.get('"'"'phase'"'"', '"'"'unknown'"'"')}")
+'
+}
+
+write_recovery_manifest() {
+  local state="$1"
+  local phase="$2"
+  local previous="$3"
+  local generation="$4"
+  local old_checksum_before="${5:-}"
+  local old_checksum_after="${6:-}"
+  local output temporary
+  output="$(recovery_manifest_path "$generation")"
+  mkdir -p -- "$(dirname "$output")"
+  temporary="$(mktemp "${output}.tmp.XXXXXX")"
+  docker run --rm --network none \
+    --env "STATE=$state" \
+    --env "PHASE=$phase" \
+    --env "PREVIOUS_GENERATION=$previous" \
+    --env "NEW_GENERATION=$generation" \
+    --env "OLD_CONNECTOR=$(generation_value "$previous" DEBEZIUM_CONNECTOR_NAME)" \
+    --env "NEW_CONNECTOR=$(generation_value "$generation" DEBEZIUM_CONNECTOR_NAME)" \
+    --env "OLD_SLOT=$(generation_value "$previous" POSTGRES_REPLICATION_SLOT)" \
+    --env "NEW_SLOT=$(generation_value "$generation" POSTGRES_REPLICATION_SLOT)" \
+    --env "OLD_TOPIC_PREFIX=$(generation_value "$previous" KAFKA_TOPIC_PREFIX)" \
+    --env "NEW_TOPIC_PREFIX=$(generation_value "$generation" KAFKA_TOPIC_PREFIX)" \
+    --env "OLD_GROUP=$(generation_value "$previous" KAFKA_CONSUMER_GROUP)" \
+    --env "NEW_GROUP=$(generation_value "$generation" KAFKA_CONSUMER_GROUP)" \
+    --env "OLD_SINK_CHECKSUM_BEFORE=$old_checksum_before" \
+    --env "OLD_SINK_CHECKSUM_AFTER=$old_checksum_after" \
+    "$CONSUMER_IMAGE" python -c '
+import json, os
+from datetime import datetime, timezone
+keys = ("STATE", "PHASE", "PREVIOUS_GENERATION", "NEW_GENERATION", "OLD_CONNECTOR", "NEW_CONNECTOR", "OLD_SLOT", "NEW_SLOT", "OLD_TOPIC_PREFIX", "NEW_TOPIC_PREFIX", "OLD_GROUP", "NEW_GROUP", "OLD_SINK_CHECKSUM_BEFORE", "OLD_SINK_CHECKSUM_AFTER")
+payload = {key.lower(): os.environ[key] for key in keys}
+payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+print(json.dumps(payload, indent=2, sort_keys=True))
+' >"$temporary"
+  mv -- "$temporary" "$output"
+  chmod 0644 "$output"
+  printf 'recovery manifest state=%s phase=%s path=%s\n' \
+    "$state" "$phase" "${output#"$PROJECT_ROOT/"}"
+}
+
+mark_recovery_manifest_failed() {
+  local generation="$1"
+  local output temporary
+  output="$(recovery_manifest_path "$generation")"
+  [[ -f "$output" ]] || return 0
+  chmod 0644 "$output"
+  temporary="$(mktemp "${output}.tmp.XXXXXX")"
+  docker run --rm --network none --read-only \
+    --volume "$output:/manifest.json:ro" \
+    "$CONSUMER_IMAGE" python -c '
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+payload = json.loads(Path("/manifest.json").read_text())
+payload["state"] = "FAILED"
+payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+print(json.dumps(payload, indent=2, sort_keys=True))
+' >"$temporary"
+  mv -- "$temporary" "$output"
+  chmod 0644 "$output"
+  printf 'recovery manifest state=FAILED path=%s\n' "${output#"$PROJECT_ROOT/"}" >&2
 }
 
 new_generation() {
-  (($# == 1)) || fail "usage: scripts/lab new-generation g002" 64
+  (($# == 1)) || fail "usage: scripts/lab new-generation <gNNN>" 64
   local generation="$1"
+  local previous status
   validate_generation_name "$generation"
   [[ "$generation" != "$DEFAULT_GENERATION" ]] \
-    || fail "new generation must not reuse g001" 65
-  [[ ! -e "$(generation_file "$generation")" ]] \
-    || fail "generation metadata already exists: config/generations/$generation.env" 65
-  fail "new-generation is intentionally unavailable until R-08 implements isolated connector/slot/topics/group/sink generation" 69
+    || fail "new generation must not reuse $DEFAULT_GENERATION" 65
+  require_generation_contract "$generation"
+  previous="$(generation_predecessor "$generation")"
+  require_generation_contract "$previous"
+  require_running_service postgres
+  require_running_service kafka
+  require_running_service connect
+  docker image inspect "$CONSUMER_IMAGE" >/dev/null 2>&1 \
+    || fail "consumer image is unavailable; run scripts/lab pull" 69
+
+  validate_recovery_manifest_identity "$previous" "$generation"
+  write_recovery_manifest IN_PROGRESS preparing "$previous" "$generation"
+
+  set +e
+  (
+    set -Eeuo pipefail
+    local old_checksum_before old_checksum_after previous_consumer current_consumer
+    old_checksum_before="$(sink_files_checksum "$previous")"
+    write_recovery_manifest IN_PROGRESS stop_previous "$previous" "$generation" \
+      "$old_checksum_before"
+
+    previous_consumer="$(generation_consumer_state "$previous")"
+    if [[ "$previous" == "$DEFAULT_GENERATION" ]]; then
+      compose stop consumer >/dev/null
+    elif [[ "$previous_consumer" == "running" ]]; then
+      docker stop "$(generation_consumer_container_name "$previous")" >/dev/null
+    fi
+    [[ "$(generation_consumer_state "$previous")" != "running" ]] \
+      || fail "previous generation consumer did not stop" 1
+
+    printf 'stopping previous connector generation=%s without dropping its slot\n' "$previous"
+    stop_connector "$previous"
+    write_recovery_manifest IN_PROGRESS create_generation "$previous" "$generation" \
+      "$old_checksum_before"
+
+    printf 'creating or verifying publication/topics/connector generation=%s\n' "$generation"
+    ensure_generation_publication "$generation"
+    bootstrap_generation_topics "$generation"
+    register_generation_connector "$generation"
+
+    current_consumer="$(generation_consumer_state "$generation")"
+    if [[ "$current_consumer" == "running" ]]; then
+      docker stop "$(generation_consumer_container_name "$generation")" >/dev/null
+    fi
+    write_recovery_manifest IN_PROGRESS migrate_sink "$previous" "$generation" \
+      "$old_checksum_before"
+    migrate_recovery_sink "$generation"
+    ensure_recovery_consumer "$generation"
+    wait_for_generation_consumer "$generation"
+
+    write_recovery_manifest IN_PROGRESS verify_checkpoint_1 "$previous" "$generation" \
+      "$old_checksum_before"
+    printf 'verification checkpoint 1/2 generation=%s\n' "$generation"
+    wait_for_recovery_checkpoint "$generation"
+    sleep 5
+    write_recovery_manifest IN_PROGRESS verify_checkpoint_2 "$previous" "$generation" \
+      "$old_checksum_before"
+    printf 'verification checkpoint 2/2 generation=%s\n' "$generation"
+    wait_for_recovery_checkpoint "$generation"
+    verify_connector_stopped "$previous"
+
+    old_checksum_after="$(sink_files_checksum "$previous")"
+    [[ "$old_checksum_after" == "$old_checksum_before" ]] \
+      || fail "previous generation sink changed during recovery" 1
+    write_recovery_manifest IN_PROGRESS archive_previous "$previous" "$generation" \
+      "$old_checksum_before" "$old_checksum_after"
+    archive_generation_sink "$previous" "$generation"
+    write_recovery_manifest ACTIVE complete "$previous" "$generation" \
+      "$old_checksum_before" "$old_checksum_after"
+  )
+  status=$?
+  set -e
+  if ((status != 0)); then
+    mark_recovery_manifest_failed "$generation"
+    return "$status"
+  fi
+
+  printf 'new generation active=%s previous=%s previous_sink=ARCHIVED_READ_ONLY previous_connector=STOPPED lag=0 parity=verified\n' \
+    "$generation" "$previous"
 }
 
 generation_volume_specs() {
@@ -482,6 +1300,37 @@ generation_volume_specs() {
     "${COMPOSE_PROJECT}_connect-data|connect-data" \
     "${COMPOSE_PROJECT}_connect-logs|connect-logs" \
     "${COMPOSE_PROJECT}_consumer-data|consumer-data"
+}
+
+require_no_successor_generation_resources() {
+  local generation="$1"
+  local manifest successor resource resource_generation
+  local -a resources=()
+
+  for manifest in "$PROJECT_ROOT"/.runtime/generations/*/manifest.json; do
+    [[ -f "$manifest" ]] || continue
+    successor="$(basename -- "$(dirname -- "$manifest")")"
+    [[ "$successor" == "$generation" ]] \
+      || fail "refusing destroy: recovery manifest exists for successor generation $successor" 65
+  done
+
+  mapfile -t resources < <(
+    docker volume ls --quiet --filter label=io.kafka-debezium-cdc.generation
+  )
+  for resource in "${resources[@]}"; do
+    resource_generation="$(docker volume inspect --format '{{index .Labels "io.kafka-debezium-cdc.generation"}}' "$resource")"
+    [[ -z "$resource_generation" || "$resource_generation" == "$generation" ]] \
+      || fail "refusing destroy: volume $resource belongs to successor generation $resource_generation" 65
+  done
+
+  mapfile -t resources < <(
+    docker ps --all --quiet --filter label=io.kafka-debezium-cdc.generation
+  )
+  for resource in "${resources[@]}"; do
+    resource_generation="$(docker inspect --format '{{index .Config.Labels "io.kafka-debezium-cdc.generation"}}' "$resource")"
+    [[ -z "$resource_generation" || "$resource_generation" == "$generation" ]] \
+      || fail "refusing destroy: container $resource belongs to successor generation $resource_generation" 65
+  done
 }
 
 verify_destroy_scope() {
@@ -605,6 +1454,7 @@ destroy_generation() {
   require_generation_contract "$generation"
   [[ "$confirmation_flag" == "--confirm" && "$confirmation" == "$generation" ]] \
     || fail "destroy requires exact confirmation: scripts/lab destroy $generation --confirm $generation" 64
+  require_no_successor_generation_resources "$generation"
   verify_destroy_scope "$generation"
   printf 'destructive action: removing only Compose project=%s generation=%s containers, network and eight validated named volumes\n' \
     "$COMPOSE_PROJECT" "$generation"

@@ -1018,3 +1018,129 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: R-08
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-08`; behavioral contract — `docs/spec.md` §7 и §9, `AC-010`
+- Status: REVIEW_READY
+- Updated: 2026-10-30T00:32:51+03:00
+- Baseline HEAD: `47913e34bf3430eb992909a0de1fa23808002482`
+
+### Progress
+- Implemented: добавлены exact g002 metadata/connector config и bounded generation-aware recovery: g001 consumer/connector останавливаются без удаления state, создаются отдельные publication/slot/topics/group/volume/sink, source migration выполняется до snapshot consumption, два стабильных parity/lag checkpoint подтверждают activation. Targeted fixes архивируют g001 sink с отрицательным write probe и bootstrap/migrate guards, атомарно ведут `IN_PROGRESS`/phase/`FAILED`/`ACTIVE` manifest, отделяют immutable snapshot evidence от current parity, принимают PostgreSQL key-only delete before, очищают resolved ingestion error при успешном replay и запрещают destroy shared g001 infrastructure при любом successor manifest/labelled resource. Host/exact-image suites: 41 test PASS; 14 mutation probes detected; live create/delete replay, negative failure/retry, idempotent recovery, status/lag/isolation, destroy guard и final stopped-state checks PASS.
+- Remaining: нет blocking work; task готова к пользовательской проверке diff и checkpoint commit.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-08`, наблюдаемый выход | PASS | `scripts/lab new-generation g002` повторно выполнил full recovery и stable checkpoints: current parity customers=3/orders=3/payments=2, immutable snapshot evidence 3/3/2, ingestion errors 0, lag 0; manifest `ACTIVE/complete`; idempotent rerun PASS. |
+| `docs/spec.md` §9, `AC-010` | PASS | g001 connector `STOPPED`, old slot inactive и archived sink write denied; g002 connector/task `RUNNING`, new slot active, isolated resources and sink; create/delete id=4 replay дал raw ops `c,d,tombstone`, source/sink customers count 3, errors 0; old checksum unchanged. Final stop сохранил 8 g001 volumes, 1 g002 volume и network. `destroy g001 --confirm g001` после recovery fail-closed до Docker mutation, exit 65, resource counts неизменны 8/1/1. |
+
+### Issues
+#### R-08/B01
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; exact-image unit checks
+- Problem: новый generation-contract unit test читает `config/generations` и `config/connect`, но `scripts/check unit` монтировал только `config/kafka`.
+- Evidence: host suite: 39 tests PASS; первый exact-image `scripts/check unit`: 38 tests PASS и `FileNotFoundError: /opt/cdc/config/generations/g001.env`, exit 1.
+- Unblock: смонтировать полный repository `config/` read-only в unit container и повторить exact-image suite.
+- Resolution: `scripts/check unit` теперь монтирует `config/` read-only; exact-image suite выполнил 39 tests, exit 0, `git diff --check` PASS.
+
+#### R-08/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/spec.md` §7.2 step 1; `AC-010`; runtime recovery path
+- Problem: Kafka Connect pause request отправлял пустой PUT без JSON content type, и worker отклонял его до остановки старого connector.
+- Evidence: первый `scripts/lab new-generation g002`: g001 consumer остановлен, затем pause endpoint вернул HTTP 415 `Unsupported Media Type`; g001 connector/core services остались running, g002 resources не создавались.
+- Unblock: отправлять pause PUT с корректным JSON content type, выполнить targeted fast checks и повторить recovery command.
+- Resolution: request использует JSON body/content type; exact-image 39 tests прошли, повторный recovery создал g002 publication/topics/connector/sink, дважды подтвердил lag 0/parity и сохранил неизменный g001 sink checksum.
+
+#### R-08/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: generation-aware `scripts/lab lag g002`; обязательный gate `EVIDENCE_GATE`
+- Problem: dynamic replication-slot query использует psql variable syntax внутри `--command`, но psql передаёт `:'slot_name'` серверу без substitution.
+- Evidence: `scripts/lab status g002` PASS; затем `scripts/lab lag g002`, exit 1: PostgreSQL syntax error at `:` в `WHERE slot_name = :'slot_name'`.
+- Unblock: передать validated slot name непосредственно в SQL command, повторить lag/status/isolation assertions и idempotent recovery recheck.
+- Resolution: validated slot name включается в exact SQL; `scripts/lab lag g002` вывел slot `reserved`, retained/safe WAL, topic bounds и SQLite guard, exit 0; status/isolation/idempotent recovery также прошли.
+
+#### R-08/B04
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/spec.md` §7.2 step 1; `AC-010`; old-generation isolation
+- Problem: recovery использует Kafka Connect `pause`, который оставляет task resources allocated; старый replication slot остаётся active, поэтому это не выполняет требование остановить старый connector.
+- Evidence: после успешного g002 recovery connector status был `g001=PAUSED`, `g002=RUNNING`, но PostgreSQL показал оба slots `active=true`. Apache Kafka `/apache/kafka` docs: pause leaves resources allocated; `PUT /connectors/{name}/stop` shuts down tasks/deallocates resources and yields `STOPPED`.
+- Unblock: заменить pause на stop, проверять connector `STOPPED` и old slot inactive, повторить runtime recovery/idempotency/isolation assertions.
+- Resolution: recovery использует `PUT /stop`, принимает observed HTTP 204 и проверяет `STOPPED` с пустым task list; final PostgreSQL assertion: g001 slot inactive, g002 slot active. Idempotent recovery и 7 mutations прошли.
+
+#### R-08/B05
+- State: RESOLVED
+- Category: CODE
+- Affects: idempotent `scripts/lab new-generation g002`; обязательный gate `EVIDENCE_GATE`
+- Problem: при уже running g002 consumer ветка `[[ state != running ]] || return` возвращает status неуспешного `[[ ]]`, поэтому повторный recovery без диагностики завершается exit 1 после migration.
+- Evidence: post-stop retry успешно получил g001 `STOPPED`, verified existing g002 connector/topics/migration, затем завершился exit 1; g002 consumer остался running. Shell control-flow review локализовал nonzero bare `return`.
+- Unblock: явно возвращать `0` для already-running exact-scope consumer, повторить unit/idempotent recovery/status/lag/isolation checks.
+- Resolution: already-running branch явно возвращает 0; exact-image 39 tests, idempotent full recovery, status/lag и isolation assertions прошли.
+
+#### R-08/B06
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/spec.md` §7.2; `AC-010`; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: остановленный g001 Compose consumer сохраняет writable mount old sink; checksum доказывает только отсутствие записи во время команды, но не read-only состояние после recovery.
+- Evidence: reviewer call 1: `read_only: true` защищает rootfs, не named volume; сохранённый g001 container можно запустить и писать `/data`.
+- Unblock: после успешных gates архивировать old sink filesystem для consumer UID, проверять отрицательный write probe и запрещать bootstrap/migrate archived generation.
+- Resolution: recovery создаёт generation archive marker, снимает write bits с old SQLite/WAL/SHM и подтверждает write denial из consumer UID; `bootstrap g001` и internal migrate archived g001 завершаются fail-closed. Final old checksum до/после activation совпал.
+
+#### R-08/B07
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/spec.md` §7.2 failed-recovery rule; `AC-010`; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: после остановки predecessor любой дальнейший failure оставляет систему в recovery без explicit persisted state; manifest создаётся только на success.
+- Evidence: reviewer call 1: failure publication/topic/config/migration/parity после g001 stop не создаёт IN_PROGRESS/FAILED marker.
+- Unblock: атомарно писать generation manifest `IN_PROGRESS` до stop, phase updates, `FAILED` при nonzero и `ACTIVE` только после final gates; retry валидирует exact identity.
+- Resolution: manifest атомарно создаётся `IN_PROGRESS/preparing` до stop, обновляет phase, trap записывает `FAILED`, а `ACTIVE/complete` устанавливается только после обоих checkpoints, old-state assertions и archive. Missing-config probe сохранил `FAILED/create_generation`; восстановление exact config и retry завершились `ACTIVE/complete`.
+
+#### R-08/B08
+- State: RESOLVED
+- Category: TEST
+- Affects: source/sink verification oracle; `AC-010`; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: current source row counts ошибочно используются как expected snapshot counts, поэтому streaming create/delete между snapshot и checkpoint вызывает неизбежный timeout при корректной parity.
+- Evidence: reviewer call 1: update-only probe не менял counts и не выявил дефект; create/delete меняют current counts, но immutable raw `op=r` counts — нет.
+- Unblock: разделить current parity и snapshot evidence; требовать корректное наличие initial `op=r` для всех fixture tables без сравнения с поздними current counts, добавить create/delete regression/probe.
+- Resolution: verification независимо сравнивает current source/sink counts и требует положительное immutable `op=r` evidence для exact fixture tables. Live create/delete id=4 изменил current counts 3→4→3 без изменения snapshot counts 3/3/2; retry checkpoints, parity и lag 0 прошли.
+
+#### R-08/B09
+- State: RESOLVED
+- Category: CODE
+- Affects: R-08/B07 explicit failure state; targeted fix iteration 1
+- Problem: atomic manifest temp file сохраняется с mode 0600; consumer-image UID не может прочитать bind-mounted manifest при попытке отметить recovery `FAILED`.
+- Evidence: negative missing-config probe завершился ожидаемым primary failure, затем `mark_recovery_manifest_failed` получил `PermissionError: /manifest.json`; manifest остался `IN_PROGRESS phase=create_generation`.
+- Unblock: нормализовать manifest mode 0644 после atomic replace и перед read/validation, повторить negative probe и successful retry.
+- Resolution: все manifest writes нормализуют mode 0644 перед atomic replace/validation. Negative missing-config probe получил ожидаемый primary failure и читаемый `FAILED/create_generation`; subsequent retry PASS.
+
+#### R-08/B10
+- State: RESOLVED
+- Category: CODE
+- Affects: R-08/B08 create/delete runtime probe; `AC-010` source parity
+- Problem: live delete после streaming create при PostgreSQL default replica identity содержит только key, а Debezium JSON заполняет non-key `before` placeholders; consumer валидирует их как полную строку и fail-stop.
+- Evidence: g002 create id=4 applied; delete coordinate `customers partition=1 offset=2` сохранил `RecordValidationError: before.full_name must be non-empty`, payload `op=d` с correct id=4 и placeholder empty strings/epoch timestamps; consumer exited, source row удалена, sink row осталась.
+- Unblock: для delete валидировать exact before shape и immutable key/id, но не non-key placeholder values; сохранить полную before validation для updates, добавить unit regression, rebuild exact image и replay same coordinate.
+- Resolution: delete сохраняет exact envelope/field-set/key validation, но non-key placeholder values не интерпретирует как full row; updates по-прежнему проходят full before validation. Successful replay same coordinate удаляет resolved ingestion error атомарно. Unit regression и live replay дали errors=0, row id=4 absent, raw ops `c,d,tombstone`; exact-image suite PASS.
+
+#### R-08/B11
+- State: RESOLVED
+- Category: CODE
+- Affects: generation isolation после recovery; destructive-action boundary; `AC-010`; fresh reviewer call 2
+- Problem: g002 resources используют shared PostgreSQL/Kafka/Connect volumes Compose project g001; прежний `destroy g001` после остановки containers мог удалить shared core state и оставить unusable g002 sink.
+- Evidence: reviewer call 2: generation labels восьми core volumes остаются g001, а g002 slot/topics/connector offsets живут внутри них; прежний destroy проверял только exact g001 labels и затем выполнял `compose down`/volume removal.
+- Unblock: fail closed до `verify_destroy_scope`/`compose down`, если существует любой non-target recovery manifest, generation-labelled volume или container; executable regression для `ACTIVE` и `FAILED` successor states и live stopped-state probe.
+- Resolution: `require_no_successor_generation_resources` вызывается сразу после exact confirmation и до destructive Docker path. Temp-repo executable test подтвердил для `ACTIVE` и `FAILED`, что Docker вообще не вызывается; live `destroy g001 --confirm g001` при active g002 manifest завершился exit 65, сохранив 8 g001 volumes, 1 g002 volume и network. Exact-image suite: 41 test PASS; successor-guard mutation detected.
+
+### Review
+- Verdict: PASS
+- Calls: 3
+- Fix iterations: 2
+- Details: call 1 `BLOCK` по B06–B08; call 2 подтвердил B06–B10 resolved и дал B11 unsafe shared-infrastructure destroy; targeted fixes закрыли B06–B11. Fresh call 3: `PASS`, BLOCKER none. Non-blocking improvements: расширить B11 test на explicit `IN_PROGRESS`/label fallback, усилить archive probe записью в existing SQLite file и в будущей acceptance automation фиксировать pre-snapshot baseline coverage; live Docker evidence остаётся записанным evidence основной сессии.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.

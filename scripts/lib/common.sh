@@ -34,6 +34,15 @@ generation_file() {
   printf '%s/config/generations/%s.env\n' "$PROJECT_ROOT" "$generation"
 }
 
+generation_predecessor() {
+  local generation="$1"
+  local number
+  validate_generation_name "$generation"
+  number=$((10#${generation#g}))
+  ((number > 1)) || fail "generation has no predecessor: $generation" 65
+  printf 'g%03d\n' "$((number - 1))"
+}
+
 read_env_value() {
   local file="$1"
   local name="$2"
@@ -60,8 +69,6 @@ require_generation_contract() {
   local generation="$1"
   local file key expected actual
   validate_generation_name "$generation"
-  [[ "$generation" == "$DEFAULT_GENERATION" ]] \
-    || fail "runtime commands currently support only g001; isolated generation creation is implemented by R-08" 69
   file="$(generation_file "$generation")"
 
   while IFS='|' read -r key expected; do
@@ -85,8 +92,15 @@ SQLITE_SINK_PATH|/data/cdc-$generation.sqlite3
 EOF
 }
 
+generation_value() {
+  local generation="$1"
+  local name="$2"
+  require_generation_contract "$generation"
+  read_env_value "$(generation_file "$generation")" "$name"
+}
+
 compose() {
-  local generation="${CDC_LAB_GENERATION:-$DEFAULT_GENERATION}"
+  local generation="$DEFAULT_GENERATION"
   local -a validated_env_names=(
     CDC_GENERATION_ID
     POSTGRES_DATABASE

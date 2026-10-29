@@ -802,11 +802,10 @@ class ProcessingTests(unittest.TestCase):
             ).fetchone(),
             (None,),
         )
-        self.assertEqual(
+        self.assertIsNone(
             self.connection.execute(
                 "SELECT attempt_count FROM ingestion_errors WHERE offset = 46"
-            ).fetchone(),
-            (1,),
+            ).fetchone()
         )
 
         nullable = with_customers_phone(
@@ -821,45 +820,69 @@ class ProcessingTests(unittest.TestCase):
             (None,),
         )
 
-    def test_oversized_before_int64_is_a_durable_validation_error(self) -> None:
-        for offset, operation in ((47, "u"), (48, "d")):
-            record = make_record(
-                table="orders",
-                row_id=103,
-                offset=offset,
-                operation=operation,
+    def test_oversized_update_before_int64_is_a_durable_validation_error(self) -> None:
+        record = make_record(
+            table="orders",
+            row_id=103,
+            offset=47,
+            operation="u",
+        )
+        value = decoded_value(record)
+        value["payload"]["before"]["customer_id"] = 1 << 63
+        oversized = replace_value(record, value)
+        for expected_attempt in (1, 2):
+            with self.assertRaisesRegex(RecordValidationError, "signed 64-bit"):
+                self.process(oversized)
+            self.assertEqual(
+                self.connection.execute(
+                    "SELECT message_value, error_class, attempt_count "
+                    "FROM ingestion_errors WHERE offset = 47"
+                ).fetchone(),
+                (
+                    oversized.value,
+                    "RecordValidationError",
+                    expected_attempt,
+                ),
             )
-            value = decoded_value(record)
-            value["payload"]["before"]["customer_id"] = 1 << 63
-            oversized = replace_value(record, value)
-            with self.subTest(operation=operation):
-                for expected_attempt in (1, 2):
-                    with self.assertRaisesRegex(
-                        RecordValidationError, "signed 64-bit"
-                    ):
-                        self.process(oversized)
-                    self.assertEqual(
-                        self.connection.execute(
-                            "SELECT message_value, error_class, attempt_count "
-                            "FROM ingestion_errors WHERE offset = ?",
-                            (offset,),
-                        ).fetchone(),
-                        (
-                            oversized.value,
-                            "RecordValidationError",
-                            expected_attempt,
-                        ),
-                    )
-                self.assertIsNone(
-                    self.connection.execute(
-                        "SELECT offset FROM raw_events WHERE offset = ?",
-                        (offset,),
-                    ).fetchone()
-                )
+        self.assertIsNone(
+            self.connection.execute(
+                "SELECT offset FROM raw_events WHERE offset = 47"
+            ).fetchone()
+        )
         self.assertIsNone(
             self.connection.execute(
                 "SELECT id FROM orders_current WHERE id = 103"
             ).fetchone()
+        )
+
+    def test_delete_accepts_replica_identity_key_only_before_payload(self) -> None:
+        record = make_record(
+            table="customers",
+            row_id=4,
+            offset=48,
+            operation="d",
+        )
+        value = decoded_value(record)
+        before = value["payload"]["before"]
+        for name in ("email", "full_name", "status"):
+            before[name] = ""
+        for name in ("created_at", "updated_at"):
+            before[name] = "1970-01-01T00:00:00.000000Z"
+        delete = replace_value(record, value)
+
+        self.assertEqual(self.process(delete).status, "applied")
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT operation, processing_status FROM raw_events WHERE offset = 48"
+            ).fetchone(),
+            ("d", "applied"),
+        )
+        self.assertEqual(
+            self.connection.execute(
+                "SELECT last_was_delete FROM entity_watermarks "
+                "WHERE source_table = 'customers' AND entity_key = '4'"
+            ).fetchone(),
+            (1,),
         )
 
     def test_oversized_connect_int64_is_a_durable_validation_error(self) -> None:

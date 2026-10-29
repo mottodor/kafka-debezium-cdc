@@ -43,7 +43,7 @@ unit_checks() {
     --volume "$PROJECT_ROOT/consumer/src:/opt/cdc/consumer/src:ro" \
     --volume "$PROJECT_ROOT/consumer/tests:/opt/cdc/consumer/tests:ro" \
     --volume "$PROJECT_ROOT/scripts:/opt/cdc/scripts:ro" \
-    --volume "$PROJECT_ROOT/config/kafka:/opt/cdc/config/kafka:ro" \
+    --volume "$PROJECT_ROOT/config:/opt/cdc/config:ro" \
     --volume "$COMPOSE_FILE:/opt/cdc/compose.yaml:ro" \
     --env PYTHONPATH=/opt/cdc/consumer/src \
     --workdir /opt/cdc \

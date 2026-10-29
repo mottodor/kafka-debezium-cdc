@@ -515,9 +515,16 @@ def _validate_before_row(
     row: Any,
     row_schema: dict[str, dict[str, Any]],
     entity_id: int,
+    *,
+    key_only: bool = False,
 ) -> None:
     values = _require_object(row, "value.payload.before")
     _require_exact_names(values, set(row_schema), "value.payload.before")
+    if key_only:
+        before_id = _require_int(values["id"], "value.payload.before.id", minimum=1)
+        if before_id != entity_id:
+            _raise("value.payload.before.id does not match key.payload.id")
+        return
     field_types = dict(ROW_FIELD_TYPES[table])
     if "phone" in row_schema:
         field_types["phone"] = "string"
@@ -738,7 +745,7 @@ def _parse_record(
     else:
         if after is not None:
             _raise("delete event must have null after payload")
-        _validate_before_row(table, before, row_schema, entity_id)
+        _validate_before_row(table, before, row_schema, entity_id, key_only=True)
         row = None
 
     return _ParsedRecord(
@@ -938,6 +945,17 @@ def _write_watermark(
     )
 
 
+def _clear_ingestion_error(
+    connection: sqlite3.Connection,
+    record: KafkaRecord,
+) -> None:
+    connection.execute(
+        "DELETE FROM ingestion_errors "
+        "WHERE topic = ? AND partition = ? AND offset = ?",
+        (record.topic, record.partition, record.offset),
+    )
+
+
 def _record_ingestion_error(
     connection: sqlite3.Connection,
     generation: str,
@@ -1024,6 +1042,7 @@ def process_record(
                 "WHERE topic = ? AND partition = ? AND offset = ?",
                 (record.topic, record.partition, record.offset),
             )
+            _clear_ingestion_error(connection, record)
             connection.execute("COMMIT")
             return ProcessResult(duplicate[0], True, None)
 
@@ -1050,6 +1069,7 @@ def process_record(
             _set_raw_durable_commit_time(
                 connection, record, observed_at or _utc_now()
             )
+            _clear_ingestion_error(connection, record)
             connection.execute("COMMIT")
             return ProcessResult("tombstone", False, None)
 
@@ -1080,6 +1100,7 @@ def process_record(
         _set_raw_durable_commit_time(
             connection, record, observed_at or _utc_now()
         )
+        _clear_ingestion_error(connection, record)
         connection.execute("COMMIT")
         return ProcessResult(status, False, parsed.token)
     except ProcessingError as error:
