@@ -1,0 +1,155 @@
+name: cdc-lab-g001
+
+x-service-defaults: &service-defaults
+  init: true
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+  networks:
+    - cdc-lab
+
+services:
+  postgres:
+    <<: *service-defaults
+    image: postgres:16.13-bookworm@sha256:472efd9a66f2b2f1a5aeb18b28de74332e6ef88c2b93a1a5d812fb6db67a5f60
+    environment:
+      POSTGRES_DB: ${POSTGRES_DATABASE:-cdc_lab}
+      POSTGRES_USER: cdc_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD in .env}
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_slot_wal_keep_size=1GB
+    ports:
+      - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    cpus: 1.5
+    mem_limit: 2g
+    mem_reservation: 512m
+    pids_limit: 256
+
+  kafka:
+    <<: *service-defaults
+    image: quay.io/debezium/kafka:3.6.3.Final@sha256:c8af47ccb718e5f17cba0493142079f38ed18df3615200f5ae6a6aa21c49c658
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
+      NODE_ID: "1"
+      NODE_ROLE: combined
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://${KAFKA_ADVERTISED_HOST:-localhost}:${KAFKA_EXTERNAL_PORT:-29092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LOG_DIRS: /kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_HEAP_OPTS: -Xms1g -Xmx1g
+    ports:
+      - "${KAFKA_BIND_ADDRESS:-127.0.0.1}:${KAFKA_EXTERNAL_PORT:-29092}:29092"
+    volumes:
+      - kafka-config:/kafka/config
+      - kafka-data:/kafka/data
+      - kafka-logs:/kafka/logs
+    healthcheck:
+      test: ["CMD-SHELL", "/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 40s
+    cpus: 2.0
+    mem_limit: 3g
+    mem_reservation: 1g
+    pids_limit: 512
+
+  connect:
+    <<: *service-defaults
+    image: quay.io/debezium/connect:3.6.3.Final@sha256:47f266af35d478b646db2e2e4603d21e56861151ab946e879b38edd5b533b6a6
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: cdc-connect-g001
+      CONFIG_STORAGE_TOPIC: cdc.g001.connect.configs
+      OFFSET_STORAGE_TOPIC: cdc.g001.connect.offsets
+      STATUS_STORAGE_TOPIC: cdc.g001.connect.status
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "true"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "true"
+      REST_ADVERTISED_HOST_NAME: connect
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx1g
+    ports:
+      - "${KAFKA_CONNECT_BIND_ADDRESS:-127.0.0.1}:${KAFKA_CONNECT_PORT:-8083}:8083"
+    volumes:
+      - connect-config:/kafka/config
+      - connect-data:/kafka/data
+      - connect-logs:/kafka/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8083/connectors >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    cpus: 2.0
+    mem_limit: 2g
+    mem_reservation: 512m
+    pids_limit: 512
+
+volumes:
+  postgres-data:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
+      io.kafka-debezium-cdc.purpose: postgres-data
+  kafka-config:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
+      io.kafka-debezium-cdc.purpose: kafka-config
+  kafka-data:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
+      io.kafka-debezium-cdc.purpose: kafka-data
+  kafka-logs:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
+      io.kafka-debezium-cdc.purpose: kafka-logs
+  connect-config:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
+      io.kafka-debezium-cdc.purpose: connect-config
+  connect-data:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
+      io.kafka-debezium-cdc.purpose: connect-data
+  connect-logs:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
+      io.kafka-debezium-cdc.purpose: connect-logs
+
+networks:
+  cdc-lab:
+    labels:
+      io.kafka-debezium-cdc.generation: g001
