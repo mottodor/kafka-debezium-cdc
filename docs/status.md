@@ -325,3 +325,77 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: R-01
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-01`; behavioral contract — `docs/spec.md` §§3.1, 3.6 и 9.1
+- Status: REVIEW_READY
+- Updated: 2026-10-29T15:41:00+03:00
+- Baseline HEAD: `2d7655b001f48ee500e4881aed40c16a533d4fde`
+
+### Progress
+- Implemented: расширен bootstrap verifier: exact source columns/identity metadata, monetary precision, enabled immutable-ID triggers, RESTRICT foreign keys и отсутствие column-level write grants; runtime checker теперь отрицательно проверяет изменение `id` во всех трёх таблицах и connector DML через ожидаемые SQLSTATE.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-01`, критерий проверки | PASS | fast final after review-fix: shell + validator с 15 static mutations и 7 mock failure modes, exit 0, 1044 ms; `git diff --check`, exit 0. Standard final: verifier дважды прошёл, exit 0, 544/523 ms; direct identity `428C9`, transactional trigger `23000`, connector DML `42501`, post-probe catalog/seed/sequence checks PASS; config/sequences 96 ms; stop 550 ms. |
+| `docs/spec.md` §9, `AC-001` (source/seed contribution) | PASS | standard: оба runtime verifier run подтвердили exact три source-таблицы, seed counts/values `2/2/1` и identity positions; full sink AC остаётся последующим scope. |
+| `docs/spec.md` §9, `AC-002` (source-model contribution) | PASS | standard final: exact schema/constraints/triggers прошли; direct assignments всех `id` отклонены `428C9`, а transactional `SET id = DEFAULT` для каждой таблицы достиг immutable-ID trigger и отклонён `23000`; sequences восстановлены в `3:false|103:false|1002:false`. Full CDC streaming относится к R-02/R-05. |
+| `docs/spec.md` §9, `AC-013` (role/publication contribution) | PASS | standard: runtime verifier подтвердил role attributes, CONNECT/USAGE/SELECT, отсутствие database/schema/table/column write privileges, exact publication; connector UPDATE отклонён SQLSTATE `42501`. |
+
+### Issues
+#### R-01/B01
+- State: RESOLVED
+- Category: PERMISSION
+- Affects: `docs/bootstrap.md` §6.3 `R-01`; обязательные gates `EVIDENCE_GATE` и `FRESH_READ_ONLY_REVIEW`
+- Problem: новые PostgreSQL catalog assertions и immutable-ID SQLSTATE probes должны быть выполнены на exact g001 runtime, но container startup требует отдельного явного разрешения.
+- Evidence: пользователь явно разрешил продолжение с запуском контейнеров; preflight подтвердил initial_stopped, exact pinned image ID/digest, существующий read-only bind `/opt/cdc/postgres`, generation volume и свободный port 5432. Fast/mock checks прошли, но runtime assertion ещё не выполнен.
+- Unblock: основной агент запускает только `cdc-lab-g001-postgres-1`, выполняет verifier и останавливает container без удаления volumes/network.
+- Resolution: пользователь дал разрешение; exact existing PostgreSQL container стал healthy за 5886 ms, runtime verifier был запущен, а cleanup восстановил stopped state с exit 0 без удаления volumes/network.
+
+#### R-01/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §6.3 `R-01`; обязательный gate `EVIDENCE_GATE`
+- Problem: verifier не выполняется из-за неоднозначности между PL/pgSQL variable `table_name` и одноимённой колонкой `information_schema.columns`.
+- Evidence: runtime attempt 1 exit 3 в column-array query; после alias fix attempt 2 exit 3 в двух monetary `information_schema.columns` subqueries. PostgreSQL стал healthy за 5951 ms, cleanup снова восстановил stopped state.
+- Unblock: квалифицировать обе monetary subqueries отдельными aliases, расширить validator на отсутствие любых unqualified `table_name` в `information_schema` queries и повторить runtime verifier.
+- Resolution: обе monetary subqueries квалифицированы; validator обнаружил 8 mutations, а следующий runtime запуск выполнил весь catalog DO block и перешёл к immutable-ID probes.
+
+#### R-01/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`
+- Problem: первая targeted mutation заменила только одну из трёх ссылок `source_column.table_name`, а validator проверял лишь наличие хотя бы одной ссылки и не обнаружил частичную mutation.
+- Evidence: affected-fast exit 1: `mutation 4 was not detected`; фактическое число qualified references равно 3.
+- Unblock: требовать exact count трёх qualified `table_name` references и повторить mutation/check.
+- Resolution: validator теперь требует exact count трёх qualified `source_column.table_name` references; affected-fast прошёл за 25 ms и обнаружил все 6 mutations, включая частичную потерю alias.
+
+#### R-01/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap.md` §6.3 `R-01`; immutable-ID assertion
+- Problem: direct `SET id = 9001` probes подтверждают identity mode через `428C9`, но не исполняют immutable-ID row trigger и потому не доказывают его behavior.
+- Evidence: reviewer call 1: при сохранённых trigger names/wiring, но удалённой проверке `NEW.id/OLD.id`, catalog assertions и все `428C9` probes прошли бы; `SET id = DEFAULT` мог бы изменить ключ.
+- Unblock: сохранить `428C9` identity probes и добавить transactional `SET id = DEFAULT` для каждой таблицы с ожидаемым trigger SQLSTATE `23000`, обязательным rollback и восстановлением `last_value/is_called` sequences.
+- Resolution: transactional `SET id = DEFAULT` probes для customers/orders/payments получили ожидаемый trigger SQLSTATE `23000`; каждая операция выполняется внутри rollback-bound transaction, sequence state сохраняется/restores, а финальный catalog verifier подтверждает seed и positions. Два последовательных runtime run прошли.
+
+#### R-01/B05
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; sequence restoration trigger probes
+- Problem: sequence-state parser ожидает `t/f`, тогда как PostgreSQL text concatenation возвращает `true/false`.
+- Evidence: post-review runtime fix-run: PostgreSQL стал healthy за 5960 ms, catalog verifier прошёл (`DO`), затем checker завершился `unexpected sequence state for public.customers_id_seq`; cleanup восстановил stopped state.
+- Unblock: принимать exact `true|false`, обновить mock negative case и повторить fast/runtime checks.
+- Resolution: parser принимает exact `true|false`; final fast mutation обнаруживает возврат к `t/f`, два runtime verifier run и independent config/sequence query подтвердили `3:false|103:false|1002:false`.
+
+### Review
+- Verdict: OK
+- Calls: 2
+- Fix iterations: 1
+- Details: call 1 обнаружил BLOCKER trigger behavior; после targeted fix call 2 проверил полный финальный diff/evidence, подтвердил безопасный rollback/sequence restore и отсутствие blockers, `VERDICT OK`. DEFERRED: publication operation flags/row filters/column lists. IMPROVEMENT: hardening на случай принудительного завершения shell между sequence-consuming probe и restore.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
