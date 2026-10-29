@@ -67,12 +67,17 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
       KAFKA_HEAP_OPTS: -Xms1g -Xmx1g
+      KAFKA_TOPIC_PREFIX: ${KAFKA_TOPIC_PREFIX:-cdc.g001}
+      KAFKA_CUSTOMERS_TOPIC: ${KAFKA_CUSTOMERS_TOPIC:-cdc.g001.public.customers}
+      KAFKA_ORDERS_TOPIC: ${KAFKA_ORDERS_TOPIC:-cdc.g001.public.orders}
+      KAFKA_PAYMENTS_TOPIC: ${KAFKA_PAYMENTS_TOPIC:-cdc.g001.public.payments}
     ports:
       - "${KAFKA_BIND_ADDRESS:-127.0.0.1}:${KAFKA_EXTERNAL_PORT:-29092}:29092"
     volumes:
       - kafka-config:/kafka/config
       - kafka-data:/kafka/data
       - kafka-logs:/kafka/logs
+      - ./config/kafka:/opt/cdc/kafka:ro
     healthcheck:
       test: ["CMD-SHELL", "/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092 >/dev/null 2>&1"]
       interval: 10s
@@ -99,18 +104,30 @@ services:
       CONFIG_STORAGE_REPLICATION_FACTOR: "1"
       OFFSET_STORAGE_REPLICATION_FACTOR: "1"
       STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_TOPIC_CREATION_ENABLE: "false"
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
       KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       KEY_CONVERTER_SCHEMAS_ENABLE: "true"
       VALUE_CONVERTER_SCHEMAS_ENABLE: "true"
       REST_ADVERTISED_HOST_NAME: connect
       KAFKA_HEAP_OPTS: -Xms512m -Xmx1g
+      POSTGRES_CONNECTOR_PASSWORD: ${POSTGRES_CONNECTOR_PASSWORD:?set POSTGRES_CONNECTOR_PASSWORD in .env}
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-cdc_lab}
+      POSTGRES_SCHEMA: ${POSTGRES_SCHEMA:-public}
+      POSTGRES_CONNECTOR_USER: ${POSTGRES_CONNECTOR_USER:-cdc_connector}
+      DEBEZIUM_CONNECTOR_NAME: ${DEBEZIUM_CONNECTOR_NAME:-postgres-cdc-g001}
+      POSTGRES_REPLICATION_SLOT: ${POSTGRES_REPLICATION_SLOT:-postgres_cdc_g001}
+      POSTGRES_PUBLICATION: ${POSTGRES_PUBLICATION:-postgres_cdc_g001_pub}
+      KAFKA_TOPIC_PREFIX: ${KAFKA_TOPIC_PREFIX:-cdc.g001}
     ports:
       - "${KAFKA_CONNECT_BIND_ADDRESS:-127.0.0.1}:${KAFKA_CONNECT_PORT:-8083}:8083"
     volumes:
       - connect-config:/kafka/config
       - connect-data:/kafka/data
       - connect-logs:/kafka/logs
+      - ./config/connect:/opt/cdc/connect:ro
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8083/connectors >/dev/null"]
       interval: 10s

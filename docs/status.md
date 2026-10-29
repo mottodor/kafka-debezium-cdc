@@ -180,3 +180,95 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: E-04
+
+- Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-04`; технические требования — разделы 4.5 и 7.2
+- Status: REVIEW_READY
+- Updated: 2026-10-29T13:28:20+03:00
+- Baseline HEAD: `75fb90d921f1c6e19d8a74ce95dbafade8ad769a`
+
+### Progress
+- Implemented: добавлены generation-safe topic bootstrap для трёх table topics и transaction topic, exact retention/partition verification, g001 Debezium connector config, proxy-free Python stdlib registration/status checker со строгой проверкой password placeholder, Connect env config-provider и read-only mounts; runtime/restart assertions прошли, initial_stopped state восстановлен без удаления volumes.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.2, `E-04`, критерий проверки | PASS | standard: exact pinned services стали healthy за 27990 ms; bootstrap создал/проверил 3 table topics по 3 partitions и transaction topic по 1 partition с RF=1, delete/24h/256MiB/64MiB configs, 13120 ms; connector config совпал, connector/task `RUNNING`, slot `postgres_cdc_g001` active. После review-fix mock обнаружил чужой password placeholder/cross-generation topic, 765 ms; runtime strict config/topic recheck прошёл, 43506 ms. Final fast, exit 0, 98 ms; LSP 0 findings. |
+| `docs/spec.md` §9, `AC-001` (connector snapshot/streaming contribution) | PASS | standard: Kafka содержит exact initial snapshot `op=r`: customers=2, orders=2, payments=1; source table/marker assertions и end-offset sums `2/2/1` прошли, 23137 ms; connector/task достигли `RUNNING`. SQLite projection остаётся scope consumer tasks. |
+| `docs/spec.md` §9, `AC-013` (least-privilege connector contribution) | PASS | standard: connector с `cdc_connector`, pre-created publication и `publication.autocreate.mode=disabled` выполнил snapshot; PostgreSQL checker подтвердил catalog/grants/SELECT и denied DML, exit 0; slot=`pgoutput|logical|cdc_lab|active`, publication tables exact, 521 ms. |
+| `docs/spec.md` §9, `AC-014` (connector lifecycle/restart contribution) | PASS | standard: Connect restart сохранил connector offsets и тот же slot; connector/task снова `RUNNING`, table-topic end offsets остались `2/2/1`, новых snapshot records нет, slot active; 26091 ms. Новое streaming source change и sink assertion остаются последующим full acceptance. |
+
+### Issues
+#### E-04/B01
+- State: RESOLVED
+- Category: PERMISSION
+- Affects: `docs/bootstrap.md` §6.2 `E-04`; `AC-001`, `AC-013`, `AC-014`; обязательные gates `EVIDENCE_GATE` и `FRESH_READ_ONLY_REVIEW`
+- Problem: runtime-критерий E-04 требует запуска generation-scoped Kafka/Connect/PostgreSQL и регистрации connector, а container startup и обращения к Docker daemon требуют отдельного явного разрешения.
+- Evidence: предыдущая попытка остановилась после fast/static проверок без обращения к Docker daemon.
+- Unblock: пользователь явно разрешает запуск pinned g001 services, создание generation-scoped topics/connector/slot и read-only runtime assertions без удаления volumes или данных.
+- Resolution: разрешение получено; preflight подтвердил exact local image digests, ресурсы/диск, непустые local secrets и initial_stopped state; runtime выполнен и сервисы снова остановлены, volumes/network сохранены.
+
+#### E-04/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §6.2 `E-04`; обязательный gate `EVIDENCE_GATE`
+- Problem: connector registration script предполагает наличие `jq`, которого нет в exact pinned Connect image.
+- Evidence: первый runtime registration завершился exit 69 — `required command is unavailable: jq`; image probe подтвердил `python3`, но `jq=missing`.
+- Unblock: заменить jq-зависимость на доступный Python 3 stdlib JSON/HTTP path, повторить static negative tests и runtime registration.
+- Resolution: Python stdlib checker выполнился внутри exact Connect image; idempotent config verification и connector/task `RUNNING`, exit 0, 204 ms.
+
+#### E-04/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: connector registration runtime path; обязательный gate `EVIDENCE_GATE`
+- Problem: Python stdlib HTTP client наследует proxy environment и может отправить loopback Kafka Connect request через proxy вместо локального API.
+- Evidence: targeted mock после jq-removal получил HTTP 403 от proxy вместо local test server.
+- Unblock: использовать explicit proxy-free urllib opener для generation-local Connect API и повторить create/idempotent/mismatch/secret-redaction mock.
+- Resolution: proxy-free opener; targeted mock подтвердил create, idempotent recheck, worker-added name, mismatch detection и отсутствие secret в output, exit 0, 761 ms.
+
+#### E-04/B04
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-001`, `AC-013`; connector authentication and обязательный gate `EVIDENCE_GATE`
+- Problem: Debezium Connect image преобразует в worker properties только переменные с префиксом `CONNECT_`; исходные config-provider/topic-creation env names не активировали свойства worker.
+- Evidence: registration получил HTTP 400 password authentication failure при успешном PostgreSQL access checker; worker properties отсутствовали, entrypoint обрабатывает только `CONNECT_*`.
+- Unblock: использовать `CONNECT_CONFIG_PROVIDERS`, `CONNECT_CONFIG_PROVIDERS_ENV_CLASS`, `CONNECT_TOPIC_CREATION_ENABLE`, пересоздать только Connect container и повторить assertions.
+- Resolution: recreated Connect worker содержит exact `config.providers`, provider class и `topic.creation.enable=false`; connector зарегистрирован с environment-resolved password и достиг `RUNNING`.
+
+#### E-04/B05
+- State: RESOLVED
+- Category: CODE
+- Affects: connector idempotency verification; обязательный gate `EVIDENCE_GATE`
+- Problem: Kafka Connect GET config добавляет служебное поле `name`, а verifier требовал буквальное равенство только исходному `config` object.
+- Evidence: connector зарегистрирован, затем verifier завершился exit 1; единственным дополнительным полем было exact `name=postgres-cdc-g001`.
+- Unblock: разрешить только matching `name`, сохранив строгую проверку всех остальных полей; повторить mock mutation и runtime idempotent registration/status.
+- Resolution: exact matching name принят, остальные поля сравниваются строго; mismatch mutation обнаружена, runtime повторная регистрация не создала connector заново и подтвердила `RUNNING`.
+
+#### E-04/B06
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §6.2 `E-04`; exact connector config и обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: verifier проверяет только наличие `database.password`, но не требует сохранения approved `${env:POSTGRES_CONNECTOR_PASSWORD}` placeholder.
+- Evidence: reviewer call 1: существующий connector с literal password или другим env placeholder прошёл бы equality check после удаления password из actual/expected; `VERDICT BLOCK`.
+- Unblock: сравнивать password field с expected placeholder без вывода значения, добавить negative mutation и повторить affected runtime check/fresh review.
+- Resolution: verifier требует exact placeholder и выдаёт redacted diagnostic; targeted mock обнаружил `${env:OTHER_PASSWORD}`, runtime existing connector прошёл strict check и остался `RUNNING`. Неблокирующая рекомендация reviewer также выполнена: table topics обязаны соответствовать prefix и быть уникальными.
+
+#### E-04/B07
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FINAL_EVIDENCE_AND_DIFF_GATE`
+- Problem: после reviewer call 2 поле Progress/Remaining всё ещё указывало на ожидаемый review, хотя содержательный diff уже получил `VERDICT OK`.
+- Evidence: финальное перечитывание секции выявило stale Remaining после успешного call 2.
+- Unblock: исправить Remaining на фактическое `none` и выполнить fresh read-only review изменённой status-записи.
+- Resolution: reviewer call 3 подтвердил исправленную status-запись, неизменность code diff и отсутствие blockers; `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: call 1 обнаружил blocker password-placeholder; после targeted fix call 2 подтвердил содержательный diff/runtime evidence; call 3 проверил финальную status-запись и неизменный code diff, findings отсутствуют, `VERDICT OK`.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.

@@ -1,0 +1,22 @@
+{
+  "name": "postgres-cdc-g001",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "cdc_connector",
+    "database.password": "${env:POSTGRES_CONNECTOR_PASSWORD}",
+    "database.dbname": "cdc_lab",
+    "topic.prefix": "cdc.g001",
+    "plugin.name": "pgoutput",
+    "slot.name": "postgres_cdc_g001",
+    "slot.drop.on.stop": "false",
+    "publication.name": "postgres_cdc_g001_pub",
+    "publication.autocreate.mode": "disabled",
+    "table.include.list": "public.customers,public.orders,public.payments",
+    "snapshot.mode": "initial",
+    "provide.transaction.metadata": "true",
+    "tombstones.on.delete": "true"
+  }
+}
