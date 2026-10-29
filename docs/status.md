@@ -446,3 +446,58 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: R-03
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-03`; behavioral contract — `docs/spec.md` §§4.1–4.5 и 9, `AC-001`–`AC-008`, `AC-012`
+- Status: REVIEW_READY
+- Updated: 2026-10-29T16:54:22+03:00
+- Baseline HEAD: `24221df6c19794844f4150ee2eb60e4613e20728`
+
+### Progress
+- Implemented: atomic migration runner с checksum/history validation; v1 schema/version/generation binding в одной transaction; immutable singleton binding защищён от INSERT/REPLACE/UPDATE/DELETE; insert/update triggers изолируют generation во всех six raw/error/projection/watermark tables; source упакован в consumer image path; 11 targeted unit/negative tests и container probes прошли.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-03`, наблюдаемый выход | PASS | fast final: 11 unit/negative tests, `py_compile`, `git diff --check`, exit 0, 0.22 s; LSP 0 findings. Standard final: exact Python image suite exit 0, 0.54 s; network-none packaged-source build 0.63 s; packaged REPLACE/atomicity/generation probe exit 0, 0.47 s; temporary image removed. |
+| `docs/spec.md` §9, `AC-001`–`AC-008` (SQLite schema contribution) | PASS | Assertions подтвердили raw bytes/headers/coordinate PK, independent projections, ordering/delete watermark, checksum/idempotency, ordinary + inline-COMMIT rollback, atomic initial binding, no pending migration on wrong generation, immutable binding including `INSERT OR REPLACE`, reject g002 insert и update для всех six scoped tables. Полные behavioral AC требуют R-04–R-06. |
+| `docs/spec.md` §9, `AC-012` (ingestion error schema contribution) | PASS | Durable error bytes/attempt count проверены; g002 error insert/update в g001 sink отклоняются; rebinding через REPLACE запрещён. Полный fail-stop/offset AC относится к R-04/R-05. |
+
+### Issues
+#### R-03/B01
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §6.3 `R-03`; обязательный gate `EVIDENCE_GATE`
+- Problem: изменение общего Dockerfile `ENV` до dependency layer инвалидировало существующий cache, поэтому network-disabled final image build пытался повторно скачать exact dependency.
+- Evidence: первый `docker build --network=none --pull=false --tag cdc-lab-consumer:r03 consumer`, exit 1 после 9.15 s; pip не смог получить `confluent-kafka==2.16.0`. После перестановки второй clean build также не имел BuildKit cache, exit 1 после 8.86 s; сеть намеренно не включалась.
+- Unblock: сохранить dependency prefix Dockerfile byte-identical baseline E-05, проверить только новый source suffix через derived image от ранее проверенного exact image и выполнить runtime probes без сети.
+- Resolution: assertion подтвердил неизменный Dockerfile prefix через dependency/user creation; network-none derived build от `cdc-lab-consumer:g001` прошёл за 0.59 s, packaged migration/negative generation probe — за 0.66 s; временный image удалён, project services остались stopped, volumes/network сохранены.
+
+#### R-03/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §6.3 `R-03`; atomic migration contract
+- Problem: transaction-statement guard видит только начало строки; inline `COMMIT` может зафиксировать partial DDL до последующей ошибки без записи migration version.
+- Evidence: reviewer call 1 `VERDICT BLOCK`; targeted reproduction с `CREATE TABLE leaked ...; COMMIT; INSERT INTO missing_table...` оставил `leaked`, а `max(schema_migrations.version)=1`. Первая fix-проверка: unit suite exit 1 — authorizer также запретил runner rollback (`sqlite3.DatabaseError: not authorized`), поэтому B02 остаётся OPEN.
+- Unblock: запретить transaction control SQLite-aware способом независимо от форматирования и добавить regression, проверяющий отсутствие DDL/version после inline `COMMIT` failure.
+- Resolution: runner теперь split-ит SQL statements, владеет `BEGIN IMMEDIATE` и запрещает `SQLITE_TRANSACTION`/`SQLITE_SAVEPOINT` через authorizer только для migration statements; authorizer снимается до rollback. Regression с inline `COMMIT` не оставляет table/version; финальные host/exact-image/container checks прошли.
+
+#### R-03/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: generation isolation; `AC-001`–`AC-008`, `AC-012`
+- Problem: generation columns не связаны с `sink_metadata`; pending migrations применяются до проверки existing binding, а initial migration и первое binding имеют crash window.
+- Evidence: reviewer call 1 `VERDICT BLOCK`; targeted reproduction записал g002 ingestion error в g001 sink и применил `pending_leak` migration до ожидаемого bind mismatch. Reviewer call 2 подтвердил прежние fixes, но выявил `INSERT OR REPLACE` bypass; targeted reproduction успешно сменил binding g001→g002.
+- Unblock: проверять binding до pending migrations, атомарно связывать initial migration с первым binding и fail-closed отклонять generation mismatch для всех generation-scoped tables; добавить negative regressions.
+- Resolution: добавлен `BEFORE INSERT` guard при существующей singleton row, поэтому `INSERT OR REPLACE`/`REPLACE` abort до conflict replacement; update/delete guards сохранены. Regression проверяет g002 insert и update во всех six scoped tables, все binding mutation paths и сохранность g001; exact-image и packaged probes прошли.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: call 1 выявил B02/B03; call 2 подтвердил B02 и выявил REPLACE bypass; call 3 проверил полный финальный tracked/untracked diff, закрытие обоих классов дефектов, status/evidence и вернул `VERDICT OK` без BLOCKER/IMPROVEMENT. DEFERRED: full end-to-end AC остаются R-04–R-06; clean network dependency rebuild не требуется для неизменного E-05 prefix.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.

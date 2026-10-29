@@ -1,0 +1,1 @@
+"""Versioned SQLite migration resources."""

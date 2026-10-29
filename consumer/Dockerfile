@@ -15,6 +15,10 @@ RUN python -m pip install --requirement requirements.txt \
     && useradd --system --uid 10001 --gid cdc --home-dir /nonexistent --shell /usr/sbin/nologin cdc \
     && install --directory --owner=cdc --group=cdc /data
 
+COPY src ./src
+
+ENV PYTHONPATH=/opt/cdc/consumer/src
+
 USER cdc
 
 CMD ["python", "check-runtime.py"]
