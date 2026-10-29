@@ -115,3 +115,68 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: E-03
+
+- Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-03`; технические требования — разделы 4.4 и 7.2
+- Status: REVIEW_READY
+- Updated: 2026-10-29T12:35:54+03:00
+- Baseline HEAD: `7c04def139ca9fa751cf204ab70517a75a6cb62b`
+
+### Progress
+- Implemented: добавлены source schema/constraints/triggers, deterministic seed и identity positions; least-privilege connector role, exact publication и startup verifier; streaming/delete/schema-change exercises; runtime access checker с positive SELECT и ожидаемым SQLSTATE `42501`; Compose подключает init scripts и fail-closed connector secret.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.2, `E-03`, критерий проверки | PASS | standard runtime: pinned PostgreSQL startup/health, exit 0, 6814 ms; in-container `verify-access.sh`, exit 0, 206 ms, подтвердил catalog/grants/publication/seed/identity positions, connector SELECT и denied UPDATE с SQLSTATE `42501`; после negative probes sequence восстановлена и checker повторно прошёл. PostgreSQL config assertion: `server_version_num=160013`, `wal_level=logical`, `max_slot_wal_keep_size=1GB`, exit 0, 141 ms. Identity/FK negative probes обнаружили SQLSTATE `428C9`, `23000`, `23503`, exit 0, 411 ms. Service остановлен за 604 ms; volume/network сохранены. Текущая попытка подтвердила применимость evidence: HEAD и protected docs неизменны, stopped container config hash совпадает с current Compose, fast checks прошли за 72 ms. |
+| `docs/spec.md` §9, `AC-001` (source/seed contribution) | PASS | standard runtime: PostgreSQL содержит exact deterministic seed `customers=2`, `orders=2`, `payments=1`; catalog/seed verifier и connector-role SELECT прошли. Полный snapshot/connector AC остаётся scope последующих задач. |
+| `docs/spec.md` §9, `AC-002` (source exercise contribution) | NOT_RUN | Exercise SQL статически проверен, но source operations намеренно не выполнялись до connector task, чтобы сохранить initial seed для snapshot; полный CDC AC относится к последующим E-04/R-02/R-05. |
+| `docs/spec.md` §9, `AC-013` (role/grants/negative DML contribution) | PASS | standard runtime: role attributes и effective privileges проверены через catalogs; connector SELECT seed counts `2\|2\|1`; UPDATE завершился ожидаемым SQLSTATE `42501`; PostgreSQL checker exit 0. Полный connector snapshot/streaming AC относится к E-04. |
+
+### Issues
+#### E-03/B01
+- State: RESOLVED
+- Category: PERMISSION
+- Affects: `docs/bootstrap.md` §6.2 `E-03`; `AC-001`, `AC-002`, `AC-013`; обязательный gate `EVIDENCE_GATE`
+- Problem: критерий E-03 требует реальных PostgreSQL catalog/seed/negative-DML assertions, но container startup и создание generation-scoped volume/network требуют отдельного явного разрешения.
+- Evidence: exact PostgreSQL image успешно pulled/inspected и digest совпал; `.env` secret preconditions и Compose config прошли с redacted output. Project containers/volumes/networks отсутствовали (`initial_stopped`); host `psql` отсутствует.
+- Unblock: пользователь явно разрешает generation-scoped startup pinned PostgreSQL `g001` и выполнение in-container access checker.
+- Resolution: разрешение получено; preflight подтвердил exact image, redacted `.env` preconditions, 16 Docker CPU, ~23.5 GiB memory, свободный port 5432 и отсутствие project resources. PostgreSQL достиг healthy, runtime checker прошёл на финальном состоянии, затем task container остановлен; generation volume/network сохранены.
+
+#### E-03/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §4.4/§6.2 `E-03`; observable delete exercise; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: delete exercise допускает `DELETE 0` для всех трёх строк и после этого успешно подтверждает только их отсутствие, не гарантируя создание delete events.
+- Evidence: reviewer call 1, P1/BLOCKER: `postgres/exercises/02-delete.sql` проходит при запуске до streaming fixture или после частичного прогона, хотя observable deletes/tombstones не возникают; `VERDICT BLOCK`.
+- Unblock: проверять `ROW_COUNT = 1` для каждого delete в порядке `payments → orders → customers`, повторить affected validator и fresh re-review.
+- Resolution: каждый delete теперь выполняется в отдельном `DO` и требует `ROW_COUNT = 1`; affected fast checks прошли, validator обнаружил mutation с удалённым row-count guard. Также password перенесён из argv в psql `\\getenv`, а `postgres/` смонтирован read-only для exact in-container checker path.
+
+#### E-03/B03
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FINAL_EVIDENCE_AND_DIFF_GATE`
+- Problem: после reviewer call 2 поле Progress/Remaining продолжало указывать на ожидаемый re-review, хотя `VERDICT CODE_REVIEW_ONLY OK` уже получен.
+- Evidence: финальное перечитывание секции выявило stale next-state description после успешного call 2.
+- Unblock: исправить Remaining на фактический runtime-only остаток и выполнить fresh read-only review изменённой status-записи.
+- Resolution: reviewer call 3 подтвердил исправленную status-секцию, сохранность code diff и отсутствие новых blockers; `VERDICT CODE_REVIEW_ONLY OK`.
+
+#### E-03/B04
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FINAL_EVIDENCE_AND_DIFF_GATE`
+- Problem: после итогового reviewer call 4 поле Progress/Remaining содержало stale фразу об ожидаемом review; её исправление является содержательной правкой status-записи и требует нового fresh review, но лимит 4 reviewer-вызовов текущей попытки исчерпан.
+- Evidence: call 4 вернул `VERDICT OK`, после чего финальное перечитывание выявило противоречие между `Status: REVIEW_READY` и фразой `итоговый fresh review ожидается отдельно` в Progress/Remaining.
+- Unblock: в новой попытке E-03 подтвердить принадлежность текущего diff, проверить применимость runtime evidence и выполнить один fresh read-only review исправленной status-записи без повторения реализации.
+- Resolution: текущая попытка подтвердила применимость evidence; fresh read-only reviewer проверил исправленную status-запись и полный diff, findings отсутствуют, `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 1
+- Fix iterations: 0
+- Details: fresh read-only reviewer проверил полный tracked/untracked diff, исправленную status-запись, применимость сохранённого runtime evidence, scope и сохранность чужих секций; findings отсутствуют, `VERDICT OK`.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
