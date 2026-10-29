@@ -272,3 +272,56 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: E-05
+
+- Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-05`; технические требования — разделы 4.1 и 4.6; exact versions — `docs/spec.md` §1 и §11.2
+- Status: REVIEW_READY
+- Updated: 2026-10-29T15:05:14+03:00
+- Baseline HEAD: `6f1e748d9d0862e1d6f35e76100187838ae1f0db`
+
+### Progress
+- Implemented: добавлены `consumer/Dockerfile` с exact Python image digest, non-root runtime и build-time version probe; `consumer/requirements.txt` с exact `confluent-kafka==2.16.0`; `consumer/check-runtime.py` с проверкой версий Python client и linked librdkafka.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.2, `E-05`, критерий проверки | PASS | fast final state: `python3 -m py_compile`, targeted validator и 4 negative mutations, exit 0, 63 ms; `git diff --check`, exit 0. Standard: exact API probe подтвердил `version()='2.16.0'`, `libversion()[0]='2.16.0'`, exit 0, 4797 ms; network-enabled build exact base/dependency прошёл, build-time import/version assertion вывел `confluent-kafka 2.16.0; librdkafka 2.16.0`, exit 0, 6459 ms; два network-disabled one-shot container probes подтвердили Python `3.12.12`, uid/gid `10001`, writable `/data`, read-only app directory, positive versions и detection мутированной expected version, exit 0, 980 ms. |
+
+### Issues
+#### E-05/B01
+- State: RESOLVED
+- Category: PERMISSION
+- Affects: `docs/bootstrap.md` §6.2 `E-05`; обязательные gates `EVIDENCE_GATE` и `FRESH_READ_ONLY_REVIEW`
+- Problem: финальная сборка требует загрузить exact Python dependency из сети, а network-enabled dependency download/build не разрешены текущим запросом явно.
+- Evidence: base image exact digest доступен локально; build с `--network=none --pull=false` дошёл до `pip install`, затем завершился exit 1 из-за недоступной сети; итоговый image `cdc-lab-consumer:g001` не создан, project services не запускались.
+- Unblock: пользователь явно разрешает network-enabled `docker build` для загрузки `confluent-kafka==2.16.0`, после чего агент повторяет build, запускает container version/import probe и fresh read-only review.
+- Resolution: пользователь дал разрешение; network-enabled build успешно загрузил exact CPython 3.12 wheel `confluent-kafka==2.16.0` и дошёл до build-time version assertion.
+
+#### E-05/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §6.2 `E-05`; обязательный gate `EVIDENCE_GATE`
+- Problem: `check-runtime.py` ошибочно индексирует результат `confluent_kafka.version()`, поэтому сравнивает ожидаемую версию со строкой `2` вместо `2.16.0`.
+- Evidence: разрешённый build установил exact package, затем завершился exit 1 с диагностикой `expected 2.16.0, got 2`; итоговый image не создан.
+- Unblock: подтвердить фактические return types `version()`/`libversion()` в exact runtime, минимально исправить checker и повторить build/container probe.
+- Resolution: exact runtime probe подтвердил `version()` как строку и `libversion()` как tuple; checker исправлен на `version()`, affected fast checks прошли, повторный build и positive/negative container probes завершились exit 0.
+
+#### E-05/B03
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FINAL_EVIDENCE_AND_DIFF_GATE`
+- Problem: после reviewer call 1 поле Progress/Remaining продолжало указывать на ожидаемый review, хотя вызов уже вернул `VERDICT OK`; исправление Progress не входит в узкое исключение служебной финализации.
+- Evidence: post-review перечитывание секции после call 1 и call 2 показывало review-state текст в Progress/Remaining; оба reviewer-вызова вернули `VERDICT OK`, но прямое исправление Progress не входит в узкое исключение служебной финализации.
+- Unblock: установить Remaining в `none` и выполнить fresh read-only review финальной status-записи и неизменного code diff.
+- Resolution: reviewer call 3 проверил финальную Progress/status-запись и неизменный code diff; stale Progress отсутствует, findings нет, `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 3
+- Fix iterations: 2
+- Details: три fresh read-only reviewer-вызова проверили полный tracked/untracked diff, final-state evidence и status consistency; calls 1–3 вернули `VERDICT OK`, итоговый call 3 подтвердил финальную Progress-запись и закрытие B03 без findings.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
