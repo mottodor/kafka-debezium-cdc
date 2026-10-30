@@ -1,11 +1,25 @@
 # Task status
 
+## Current project state
+
+- Status: IMPLEMENTED
+- Updated: 2026-10-31T00:53:40+03:00
+- Baseline HEAD: `f351094ba6eff7f04c70fb08801771ce0e4a6490`
+- Completed scope: `A-01`, `A-04`, `E-01`–`E-07`, `R-01`–`R-09`.
+- Acceptance evidence: latest recorded criterion evidence is `PASS` for `AC-001`–`AC-014`; the `R-09/B19` safety blocker for AC-007 was resolved and committed in `200b8c4dba9bac2602f341ed078f10270217b36f`.
+- Verification note: the final B19 run recorded 88 passing exact-image unit tests and a passing targeted `AC-007`; a new aggregate `scripts/check acceptance all` run was not performed during this documentation-only update.
+- Runtime note: the latest recorded runtime state is fully stopped with durable generation data preserved. No Docker, network, or destructive action was performed for this update.
+- Remaining approved implementation work: none. Future runtime checks should use `scripts/check`; generated evidence remains under ignored `.runtime/` paths.
+
+The detailed sections below retain the implementation and review evidence for each bootstrap task. Their status and next action have been updated to the commit that incorporated the reviewed diff.
+
 ## TASK_ID: A-01
 
 - Source: `docs/bootstrap.md`, раздел 6.1, строка задачи `A-01`
-- Status: REVIEW_READY
-- Updated: 2026-10-27T17:45:45+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `b36fdf4dad22b1bd0daa5aa06b5da7aa5b7d4f40`
+- Commit: `4153dd8c2eb90bec5b0d74e5753ca5b8f29cdcb2`
 
 ### Progress
 - Implemented: добавлен корневой `AGENTS.md` со ссылками на утверждённые источники, proposed commands и границами network/destructive действий.
@@ -33,14 +47,15 @@
 - Details: Итоговый fresh read-only reviewer проверил полный текущий diff, AC evidence, обязательный `docs/status.md` и resolved A-01/B01; findings отсутствуют, `VERDICT OK`.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по A-01 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: E-01
 
 - Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-01`
-- Status: REVIEW_READY
-- Updated: 2026-10-27T19:58:09+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `b36fdf4dad22b1bd0daa5aa06b5da7aa5b7d4f40`
+- Commit: `4153dd8c2eb90bec5b0d74e5753ca5b8f29cdcb2`
 
 ### Progress
 - Implemented: добавлены `.gitignore` для root `.env`, `.runtime`, SQLite и Python-generated файлов; `.env.example` с двумя явными placeholder-значениями; `config/generations/g001.env` с точными несекретными identifiers из spec; targeted validator и final diff gate прошли.
@@ -61,14 +76,15 @@ none
 - Details: итоговый fresh read-only reviewer проверил полный текущий tracked/untracked diff, E-01 evidence/status и сохранность A-01; BLOCKER, DEFERRED и IMPROVEMENT отсутствуют, `VERDICT OK`.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по E-01 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: E-02
 
 - Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-02`; технические требования — разделы 4.1–4.3
-- Status: REVIEW_READY
-- Updated: 2026-10-29T10:02:11+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `4153dd8c2eb90bec5b0d74e5753ca5b8f29cdcb2`
+- Commit: `7c04def139ca9fa751cf204ab70517a75a6cb62b`
 
 ### Progress
 - Implemented: добавлен `compose.yaml` для PostgreSQL, single-node Kafka KRaft и Kafka Connect с exact digest refs, healthchecks, loopback-only host ports, fail-closed password interpolation, generation labels, resource limits/log rotation и семью раздельными named volumes, явно покрывающими все image-declared volume paths; consumer service остаётся отдельной задачей `E-05`.
@@ -114,14 +130,15 @@ none
 - Details: итоговый fresh read-only reviewer проверил полный финальный diff и исправленную секцию статуса, подтвердил устранение E-02/B02 и E-02/B03, вернул `VERDICT OK`; runtime smoke/readiness и persistence после restart остаются DEFERRED до отдельного разрешения.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по E-02 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: E-03
 
 - Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-03`; технические требования — разделы 4.4 и 7.2
-- Status: REVIEW_READY
-- Updated: 2026-10-29T12:35:54+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `7c04def139ca9fa751cf204ab70517a75a6cb62b`
+- Commit: `75fb90d921f1c6e19d8a74ce95dbafade8ad769a`
 
 ### Progress
 - Implemented: добавлены source schema/constraints/triggers, deterministic seed и identity positions; least-privilege connector role, exact publication и startup verifier; streaming/delete/schema-change exercises; runtime access checker с positive SELECT и ожидаемым SQLSTATE `42501`; Compose подключает init scripts и fail-closed connector secret.
@@ -179,14 +196,15 @@ none
 - Details: fresh read-only reviewer проверил полный tracked/untracked diff, исправленную status-запись, применимость сохранённого runtime evidence, scope и сохранность чужих секций; findings отсутствуют, `VERDICT OK`.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по E-03 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: E-04
 
 - Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-04`; технические требования — разделы 4.5 и 7.2
-- Status: REVIEW_READY
-- Updated: 2026-10-29T13:28:20+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `75fb90d921f1c6e19d8a74ce95dbafade8ad769a`
+- Commit: `6f1e748d9d0862e1d6f35e76100187838ae1f0db`
 
 ### Progress
 - Implemented: добавлены generation-safe topic bootstrap для трёх table topics и transaction topic, exact retention/partition verification, g001 Debezium connector config, proxy-free Python stdlib registration/status checker со строгой проверкой password placeholder, Connect env config-provider и read-only mounts; runtime/restart assertions прошли, initial_stopped state восстановлен без удаления volumes.
@@ -271,14 +289,15 @@ none
 - Details: call 1 обнаружил blocker password-placeholder; после targeted fix call 2 подтвердил содержательный diff/runtime evidence; call 3 проверил финальную status-запись и неизменный code diff, findings отсутствуют, `VERDICT OK`.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по E-04 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: E-05
 
 - Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-05`; технические требования — разделы 4.1 и 4.6; exact versions — `docs/spec.md` §1 и §11.2
-- Status: REVIEW_READY
-- Updated: 2026-10-29T15:05:14+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `6f1e748d9d0862e1d6f35e76100187838ae1f0db`
+- Commit: `2d7655b001f48ee500e4881aed40c16a533d4fde`
 
 ### Progress
 - Implemented: добавлены `consumer/Dockerfile` с exact Python image digest, non-root runtime и build-time version probe; `consumer/requirements.txt` с exact `confluent-kafka==2.16.0`; `consumer/check-runtime.py` с проверкой версий Python client и linked librdkafka.
@@ -324,14 +343,15 @@ none
 - Details: три fresh read-only reviewer-вызова проверили полный tracked/untracked diff, final-state evidence и status consistency; calls 1–3 вернули `VERDICT OK`, итоговый call 3 подтвердил финальную Progress-запись и закрытие B03 без findings.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по E-05 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-01
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-01`; behavioral contract — `docs/spec.md` §§3.1, 3.6 и 9.1
-- Status: REVIEW_READY
-- Updated: 2026-10-29T15:41:00+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `2d7655b001f48ee500e4881aed40c16a533d4fde`
+- Commit: `3fdd4204dcbcb7ed804af510af351a14e10b186b`
 
 ### Progress
 - Implemented: расширен bootstrap verifier: exact source columns/identity metadata, monetary precision, enabled immutable-ID triggers, RESTRICT foreign keys и отсутствие column-level write grants; runtime checker теперь отрицательно проверяет изменение `id` во всех трёх таблицах и connector DML через ожидаемые SQLSTATE.
@@ -398,14 +418,15 @@ none
 - Details: call 1 обнаружил BLOCKER trigger behavior; после targeted fix call 2 проверил полный финальный diff/evidence, подтвердил безопасный rollback/sequence restore и отсутствие blockers, `VERDICT OK`. DEFERRED: publication operation flags/row filters/column lists. IMPROVEMENT: hardening на случай принудительного завершения shell между sequence-consuming probe и restore.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-01 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-02
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-02`; behavioral contract — `docs/spec.md` §§3.2–3.5, 5.1, 9.1, `AC-001`, `AC-008`, `AC-014`
-- Status: REVIEW_READY
-- Updated: 2026-10-29T16:27:04+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `3fdd4204dcbcb7ed804af510af351a14e10b186b`
+- Commit: `24221df6c19794844f4150ee2eb60e4613e20728`
 
 ### Progress
 - Implemented: exact g001 verifier проверяет ordered key/envelope/table/source/transaction descriptors, required optionality и snapshot enum metadata, полный row set/Decimal fixtures, per-key partition/order и полный Kafka history (`low=0`, contiguous offsets, `position=high`); generation guard включает connector/slot/publication. Две fix-итерации и final pre/post-restart runtime прошли; services возвращены в stopped state, volumes/network сохранены.
@@ -445,14 +466,15 @@ none
 - Details: call 1 выявил B01/B02; call 2 подтвердил B02 и часть B01, затем выявил schema order/optionality blocker; call 3 проверил полный финальный diff/status, подтвердил обе fixes и final evidence, findings отсутствуют, `VERDICT OK`.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-02 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-03
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-03`; behavioral contract — `docs/spec.md` §§4.1–4.5 и 9, `AC-001`–`AC-008`, `AC-012`
-- Status: REVIEW_READY
-- Updated: 2026-10-29T16:54:22+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `24221df6c19794844f4150ee2eb60e4613e20728`
+- Commit: `e8b013b40251be929258c800ec3fc8ba84659866`
 
 ### Progress
 - Implemented: atomic migration runner с checksum/history validation; v1 schema/version/generation binding в одной transaction; immutable singleton binding защищён от INSERT/REPLACE/UPDATE/DELETE; insert/update triggers изолируют generation во всех six raw/error/projection/watermark tables; source упакован в consumer image path; 11 targeted unit/negative tests и container probes прошли.
@@ -500,14 +522,15 @@ none
 - Details: call 1 выявил B02/B03; call 2 подтвердил B02 и выявил REPLACE bypass; call 3 проверил полный финальный tracked/untracked diff, закрытие обоих классов дефектов, status/evidence и вернул `VERDICT OK` без BLOCKER/IMPROVEMENT. DEFERRED: full end-to-end AC остаются R-04–R-06; clean network dependency rebuild не требуется для неизменного E-05 prefix.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-03 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-04
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-04`; behavioral contract — `docs/spec.md` §§5.1–5.6 и 9, `AC-003`, `AC-005`, `AC-006`, `AC-012`
-- Status: REVIEW_READY
-- Updated: 2026-10-29T17:45:53+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `e8b013b40251be929258c800ec3fc8ba84659866`
+- Commit: `a9c926d29f6b22a78c70a8a2e8f97cba6b091b78`
 
 ### Progress
 - Implemented: добавлены strict parser/embedded-schema validation для `before`/`after`, signed-int64 bounds, lexicographic ordering token, generation-bound atomic processor, historical collision detection, delete/tombstone/stale/duplicate semantics и durable fail-stop errors.
@@ -620,14 +643,15 @@ none
 - Details: call 1 выявил R-04/B10; после targeted fix call 2 проверил полный финальный tracked/untracked diff, status consistency и отсутствие регрессий B03–B08, вернул `VERDICT OK`. IMPROVEMENT: усилить negative oracle, временно разрешающий пустые строки для других domain fields; текущая реализация корректно их отклоняет. DEFERRED: runtime evidence не перезапускалось read-only reviewer tools.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-04 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-05
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-05`; behavioral contract — `docs/spec.md` §§4.2, 5.4 и 9, `AC-002`, `AC-004`, `AC-014`
-- Status: REVIEW_READY
-- Updated: 2026-10-29T18:14:34+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `a9c926d29f6b22a78c70a8a2e8f97cba6b091b78`
+- Commit: `c22211a21f299a0fa08599300e3552900ee9eecc`
 
 ### Progress
 - Implemented: добавлены sequential consume loop, ручная synchronous commit boundary с проверкой partition result, generation-scoped Compose consumer/volume, exact-coordinate crash-window fault injection и targeted unit/mutation tests; exact-image и live g001 assertions прошли.
@@ -685,14 +709,15 @@ none
 - Details: call 1 выявил blocker R-05/B03; после targeted restart-policy fix call 2 проверил полный финальный tracked/untracked diff, actual Compose-service evidence, закрытие R-05/B03/B04 и вернул `VERDICT OK` без findings.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-05 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: E-06
 
 - Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-06`; command contract — разделы 4.7 и 7.1
-- Status: REVIEW_READY
-- Updated: 2026-10-29T22:45:44+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `c22211a21f299a0fa08599300e3552900ee9eecc`
+- Commit: `76e239eb2fe31be8b8edd90801331cc5b2a895cd`
 
 ### Progress
 - Implemented: в текущей status-only попытке PRECHECK подтвердил тот же HEAD и согласованный E-06 diff; code-файлы не менялись после итогового reviewer call 4, protected docs совпадают с approved fingerprints, project services stopped, 8 volumes и network сохранены. Safe command interfaces и shared verifier завершены; B06/B11–B18 закрыты, final evidence применимо.
@@ -882,14 +907,15 @@ none
 - Details: fresh read-only reviewer проверил полный tracked/untracked diff, все E-06 code-файлы, применимость evidence, исправленную Progress-запись, B19 и сохранность чужих status-секций; BLOCKER/DEFERRED/IMPROVEMENT отсутствуют, `VERDICT OK`.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по E-06 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: E-07
 
 - Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-07`; fixtures/evidence requirements — разделы 7.2–7.3
-- Status: REVIEW_READY
-- Updated: 2026-10-30T13:11:37+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `101b86235219cb2cda26cf156aa59fe9ab61bae9`
+- Commit: `ece679fc137bc0c4cd430c6c0484638b672cf3c0`
 
 ### Progress
 - Implemented: E-07 fixtures/oracles, полный acceptance manifest, atomic evidence writer и offline runner; общий credential validator теперь отклоняет split sensitive argv, option assignments и single-line sensitive assignments через единую vocabulary, сохраняя ordering-token exemptions. Targeted, host и exact-image checks прошли на финальном содержательном состоянии.
@@ -1007,14 +1033,15 @@ none
 - Details: call 1 вернул BLOCK по B11; после targeted fix call 2 подтвердил содержательный diff/evidence; call 3 проверил status consistency; final call 4 подтвердил исправленное final-state AC evidence, отсутствие post-review drift и вернул `VERDICT OK`. Неблокирующее IMPROVEMENT: fsync nested artifact directories перед publication.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по E-07 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-06
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-06`; behavioral contract — `docs/spec.md` §5.5 и §9, `AC-007`
-- Status: REVIEW_READY
-- Updated: 2026-10-29T23:15:28+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `76e239eb2fe31be8b8edd90801331cc5b2a895cd`
+- Commit: `6395c908abba307c932f0c48561f861066fa8f4c`
 
 ### Progress
 - Implemented: добавлены manual target-version SQLite migrations и `0002_customers_phone.sql`; consumer startup остаётся на baseline v1 до явного `scripts/lab migrate g001`; processor принимает nullable `phone` только после согласованной v2 history/column, сохраняет fail-stop до миграции и применяет replay; source verifier принимает exact pre/post schema. Unit/mutation, exact-image и live AC-007 assertions прошли; сервисы возвращены в `initial_stopped`, 8 volumes/network сохранены. Существующая секция E-07 не изменялась.
@@ -1052,14 +1079,15 @@ none
 - Details: fresh read-only reviewer проверил полный tracked/untracked diff, `docs/status.md`, live evidence и сохранность E-07; blockers отсутствуют, `VERDICT OK`. IMPROVEMENT/P2: добавить отдельный regression для old-schema customer record после v2; текущая реализация статически корректна, finding неблокирующий.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-06 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-07
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-07`; behavioral contract — `docs/spec.md` §6 и §9, `AC-009`, `AC-011`
-- Status: REVIEW_READY
-- Updated: 2026-10-29T23:46:57+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `6395c908abba307c932f0c48561f861066fa8f4c`
+- Commit: `47913e34bf3430eb992909a0de1fa23808002482`
 
 ### Progress
 - Implemented: добавлен bounded SQLite guard с hard limit 1 GiB и controlled stop за 16 MiB до него; `lag` выводит раздельные partition lag/event age/WAL/retention/SQLite sections; topic verifier получил read-only режим; WAL warning и 5 GiB preflight guards усилены. После review-fix raw event timestamp обновляется непосредственно перед SQLite `COMMIT`; regression с 150 ms projection delay и live g001 probe прошли. Source/sink восстановлены, services остановлены, 8 volumes/network сохранены.
@@ -1107,14 +1135,15 @@ none
 - Details: call 1 выявил B03; после targeted fix call 2 проверил полный финальный diff/status, подтвердил durable-boundary timestamp, atomicity/duplicate/error semantics и вернул `VERDICT OK` без blockers. DEFERRED: actual Kafka segment aging до E-07/R-09. IMPROVEMENT: production path корректен, но test-only `observed_at` может задавать ранний durable timestamp; executable shell regressions следует перенести в E-07 harness.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-07 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-08
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-08`; behavioral contract — `docs/spec.md` §7 и §9, `AC-010`
-- Status: REVIEW_READY
-- Updated: 2026-10-30T00:32:51+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `47913e34bf3430eb992909a0de1fa23808002482`
+- Commit: `101b86235219cb2cda26cf156aa59fe9ab61bae9`
 
 ### Progress
 - Implemented: добавлены exact g002 metadata/connector config и bounded generation-aware recovery: g001 consumer/connector останавливаются без удаления state, создаются отдельные publication/slot/topics/group/volume/sink, source migration выполняется до snapshot consumption, два стабильных parity/lag checkpoint подтверждают activation. Targeted fixes архивируют g001 sink с отрицательным write probe и bootstrap/migrate guards, атомарно ведут `IN_PROGRESS`/phase/`FAILED`/`ACTIVE` manifest, отделяют immutable snapshot evidence от current parity, принимают PostgreSQL key-only delete before, очищают resolved ingestion error при успешном replay и запрещают destroy shared g001 infrastructure при любом successor manifest/labelled resource. Host/exact-image suites: 41 test PASS; 14 mutation probes detected; live create/delete replay, negative failure/retry, idempotent recovery, status/lag/isolation, destroy guard и final stopped-state checks PASS.
@@ -1233,30 +1262,31 @@ none
 - Details: call 1 `BLOCK` по B06–B08; call 2 подтвердил B06–B10 resolved и дал B11 unsafe shared-infrastructure destroy; targeted fixes закрыли B06–B11. Fresh call 3: `PASS`, BLOCKER none. Non-blocking improvements: расширить B11 test на explicit `IN_PROGRESS`/label fallback, усилить archive probe записью в existing SQLite file и в будущей acceptance automation фиксировать pre-snapshot baseline coverage; live Docker evidence остаётся записанным evidence основной сессии.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-08 не требуется; reviewed diff включён в указанный commit.
 
 ## TASK_ID: R-09
 
 - Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-09`; acceptance/evidence contract — разделы 7–8; behavioral criteria — `docs/spec.md` §9, `AC-001`–`AC-014`
-- Status: BLOCKED
-- Updated: 2026-10-30T23:43:44+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `ece679fc137bc0c4cd430c6c0484638b672cf3c0`
+- Commit: `200b8c4dba9bac2602f341ed078f10270217b36f`
 
 ### Progress
-- Implemented: B18 завершён: WAL exact boundaries и inverse negatives, exact table configs/9 ranges, bounded Kafka closed-segment deletion (`start 0→1512`, `end 2048`) и runtime restoration подтверждены. Cleanup запускается после любой create attempt, exact-validates generated topic name и использует anchored escaped Kafka regex для list/delete; timeout, absent, foreign-match и wait-for-absence regressions проходят. Final exact-image unit 80 tests и repeated AC-011 PASS.
-- Remaining: B19 (AC-007 failure cleanup) остаётся единственным OPEN blocker общего R-09; в scope текущего B18 run ничего не осталось.
+- Implemented: acceptance orchestration, evidence publication and AC-specific probes are complete. B18 closed the WAL/retention evidence gap; B19 added guarded AC-007 runtime restoration, fail-closed fallback and abort semantics for unsafe `all` continuation. The reviewed final diff was committed in `200b8c4dba9bac2602f341ed078f10270217b36f`.
+- Remaining: none
 
 ### AC evidence
 | AC / ссылка на источник | Result | Проверка / evidence / причина |
 |---|---|---|
-| `docs/bootstrap.md` §6.3, `R-09`, наблюдаемый выход | FAIL | B18/AC-011 targeted runtime PASS; final exact-image `scripts/check unit` 80 tests, exit 0 за 1.74 s; `scripts/check smoke`, exit 0 за 56.54 s; `git diff --check`/LSP PASS. Общий R-09 остаётся неприемлемым только из-за OPEN B19/AC-007; full acceptance намеренно не запускался до его закрытия. |
+| `docs/bootstrap.md` §6.3, `R-09`, наблюдаемый выход | PASS | B18/AC-011 targeted runtime PASS; B19 final exact-image `scripts/check unit` — 88 tests PASS, targeted `AC-007` PASS, guarded restoration/fallback regressions PASS. Latest recorded evidence across this section and the committed B19 closure is PASS for `AC-001`–`AC-014`; aggregate `acceptance all` was not rerun after the final B19-only safety fix. |
 | `docs/spec.md` §9, `AC-001` | PASS | g002 source/projection parity, raw snapshot events всех трёх tables и connector/task RUNNING; atomic evidence bundle опубликован. |
 | `docs/spec.md` §9, `AC-002` | PASS | standard final: `scripts/check acceptance AC-002`, exit 0 за 63.65 s — complete create/update rows customers/orders/payments совпали между source и projection; ровно 6 новых unique applied raw records; exact g002 coordinates `customers:3:c@1:27`, `orders:103:c@0:26`, `payments:1002:c@2:25`, `customers:1:u@0:11`, `orders:103:u@0:27`, `payments:1002:u@2:26`; evidence row SHA-256 опубликованы. |
 | `docs/spec.md` §9, `AC-003` | PASS | deterministic aggregate удалён `payment → order → customer`; delete+tombstone archived, projection absent, delete watermark retained. |
 | `docs/spec.md` §9, `AC-004` | PASS | final active g002 coordinate `cdc.g002.public.customers:2:20`: complete customer row including timestamps matched source immediately after durable fault, remained byte-for-value identical after duplicate retry, one raw row reached delivery_count=2 and offset advanced exactly to 21. One-off cleanup is forced before official restart. |
 | `docs/spec.md` §9, `AC-005` | PASS | deterministic reversed-source fixture: newer applied, older archived stale, projection/watermark retain newest token. |
 | `docs/spec.md` §9, `AC-006` | PASS | deterministic delete fixture: old update stale, delete watermark retained, row not resurrected. |
-| `docs/spec.md` §9, `AC-007` | BLOCKED | provenance/current-state assertions pass, but final review found no schema-v1 failure guard restoring a consistent runtime when the lab was initially running; a mid-transition error can leave the active consumer stopped and cascade later probes. |
+| `docs/spec.md` §9, `AC-007` | PASS | R-09/B19 added guarded migrated+running restoration, verified fully-stopped fallback and fail-closed abort of remaining `all` probes; final targeted acceptance passed in 68.31 s with evidence `.runtime/evidence/g002/AC-007/20261030T211536.621207Z/index.json`. |
 | `docs/spec.md` §9, `AC-008` | PASS | independent child-before-parent processor regression passed; final active source/sink domain parity confirmed. |
 | `docs/spec.md` §9, `AC-009` | PASS | stopped consumer exposed positive per-partition lag; `lab lag` separately reported durable event age and retained WAL; catch-up/parity restored. |
 | `docs/spec.md` §9, `AC-010` | PASS | acceptance final after review-fix: `scripts/check acceptance AC-010`, exit 0 за 77.62 s. Structured artifact SHA-256 `b82cd628…c153d` содержит exact manifest/marker/checksum maps/history; два connector-RUNNING checkpoint с complete timestamped rows, `ingestion_errors=0`, exact 3×3 lag zero, одинаковым row hash `40ea99eb…c70f7` и interval 24.685 s. Existing SQLite file and directory оба отвергли write probes; runtime returned to `initial_stopped`. |
@@ -1447,13 +1477,13 @@ none
 - Resolution: generated probe name is strict-validated and converted to anchored escaped Kafka regex for both list/delete; regression proves exact match and rejects dot-replaced/unsafe names. Cleanup remains idempotent after every create attempt. Exact-image 80 tests and AC-011 PASS with `cleanup_absent=true`; runtime stopped.
 
 #### R-09/B19
-- State: OPEN
+- State: RESOLVED
 - Category: CODE
 - Affects: `AC-007`, runtime preservation
-- Problem: schema-v1 transition lacks failure cleanup after stopping consumer; initially running lab can remain partial on any intermediate error.
-- Evidence: final reviewer call 4; outer cleanup only stops lab when initial state was stopped.
+- Problem: schema-v1 transition lacked failure cleanup after stopping consumer; an initially running lab could remain partial on an intermediate error.
+- Evidence: the dedicated `R-09/B19` section below records the implementation, regressions, runtime evidence and final review.
 - Unblock: guarded transition restoring migrated+running state when safe or a fully stopped explicit state; abort remaining `all` probes if restoration fails.
-- Resolution: pending; fix budget exhausted
+- Resolution: implemented and committed in `200b8c4dba9bac2602f341ed078f10270217b36f`; final targeted `AC-007` and 88-test exact-image unit suite passed.
 
 #### R-09/B09
 - State: RESOLVED
@@ -1462,23 +1492,24 @@ none
 - Problem: reviewer call 1 timed out после содержательных findings и не вернул финальный verdict.
 - Evidence: timeout 300 s; read-only reviewer не изменил tracked files, partial report содержит B06–B08.
 - Unblock: закрыть B06–B08 checks и выполнить fresh re-review в оставшемся бюджете.
-- Resolution: final fresh review completed in call 4 with `VERDICT BLOCK`; review requirement executed, but task remains incomplete.
+- Resolution: final fresh review completed in call 4 with `VERDICT BLOCK`; at that checkpoint B19 still kept R-09 incomplete. The dedicated R-09/B19 task below later resolved the blocker and was committed in `200b8c4dba9bac2602f341ed078f10270217b36f`.
 
 ### Review
 - Verdict: OK
-- Calls: 4
-- Fix iterations: 3
-- Details: calls 1–2 выявили create-timeout cleanup и Kafka regex-selector blockers; targeted fixes закрыли оба. Calls 3–4 проверили финальный B18 code/test/evidence diff и status consistency, `VERDICT OK`. DEFERRED только B19; обязательных B18 findings и improvements не осталось.
+- Calls: 4 for B18; 4 additional calls for the dedicated B19 closure
+- Fix iterations: 3 for B18; 3 for B19
+- Details: B18 closed the retention/WAL evidence findings. The separately recorded B19 review closed AC-007 restoration, strict lag inventory and fail-closed abort findings; both review sequences ended with `VERDICT OK` and were committed together.
 
 ### Next action
-Пользователю поручить отдельный implementation run для R-09/B19 (AC-007 failure cleanup и abort дальнейших `all` probes при неуспешном восстановлении).
+Дополнительных действий по R-09 не требуется; реализация и B19 closure включены в commit `200b8c4dba9bac2602f341ed078f10270217b36f`.
 
 ## TASK_ID: R-09/B19
 
 - Source: пользовательский вызов `R-09/B19`; исходная проблема — `docs/status.md`, секция `R-09`, issue `R-09/B19`; behavioral contract — `docs/spec.md` §9, `AC-007`
-- Status: REVIEW_READY
-- Updated: 2026-10-31T00:22:44+03:00
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
 - Baseline HEAD: `ece679fc137bc0c4cd430c6c0484638b672cf3c0`
+- Commit: `200b8c4dba9bac2602f341ed078f10270217b36f`
 
 ### Progress
 - Implemented: guarded AC-007 restoration возвращает migrated+running parity, а при неуспехе выполняет fail-closed `lab stop`; любое fallback invocation/verification failure преобразуется в `RuntimeRestorationError`, публикует FAIL evidence и прерывает remaining `all` probes. Lag inventory exact-validates полный group-row multiset approved topics × partitions 0..2, включая foreign extra rows. Runbook/help синхронизированы. Final exact-image unit/AC-007 прошли; runtime `initial_stopped`.
@@ -1569,4 +1600,23 @@ none
 - Details: calls 1–2 выявили B03–B07; call 3 подтвердил все code/test/docs fixes и финальное evidence; call 4 проверил status-only B08 correction и полный неизменный diff. BLOCKER/DEFERRED/IMPROVEMENT отсутствуют, итоговый `VERDICT OK`.
 
 ### Next action
-Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+Дополнительных действий по R-09/B19 не требуется; reviewed diff включён в commit `200b8c4dba9bac2602f341ed078f10270217b36f`.
+
+## TASK_ID: A-04
+
+- Source: `docs/bootstrap.md`, раздел 6.1, строка задачи `A-04`
+- Status: COMMITTED
+- Updated: 2026-10-31T00:53:40+03:00
+- Baseline HEAD: `200b8c4dba9bac2602f341ed078f10270217b36f`
+- Commit: `f351094ba6eff7f04c70fb08801771ce0e4a6490`
+
+### Progress
+- Implemented: добавлен корневой `README.md` с кратким входом в лабораторию, фактическими командами `scripts/lab`/`scripts/check`, ссылками на authoritative spec и runbook, гарантиями at-least-once и безопасными lifecycle/recovery инструкциями.
+- Remaining: none
+
+### Evidence
+- Все локальные Markdown targets существуют; документированные lifecycle/check команды присутствуют в `scripts/lab` и `scripts/check`; `.env` и `.runtime/` подтверждены как ignored; `git diff --cached --check` прошёл перед commit.
+- Runtime checks не запускались: изменение документационное и не требовало Docker/network действий.
+
+### Next action
+Дополнительных действий по A-04 не требуется; README включён в commit `f351094ba6eff7f04c70fb08801771ce0e4a6490`.
