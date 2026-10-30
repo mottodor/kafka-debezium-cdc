@@ -13,6 +13,7 @@ Usage:
   scripts/lab up
   scripts/lab bootstrap g001
   scripts/lab migrate <gNNN>
+  scripts/lab resume <gNNN>
   scripts/lab status <gNNN>
   scripts/lab lag <gNNN>
   scripts/lab stop
@@ -21,6 +22,7 @@ Usage:
 
 Network/dependency action: pull
 Manual schema action: migrate (requires stopped consumer)
+Runtime action: resume (exact-validates and starts an existing successor consumer)
 Destructive action: destroy (requires exact generation confirmation)
 Read-only actions: preflight, status, lag
 EOF
@@ -767,6 +769,61 @@ verify_recovery_consumer_scope() {
     || fail "recovery consumer container uses a stale image" 65
 }
 
+require_active_recovery_manifest() {
+  local generation="$1"
+  local previous="g001"
+  local manifest
+  [[ "$generation" == "g002" ]] \
+    || fail "only the approved g002 successor can be resumed" 65
+  manifest="$(recovery_manifest_path "$generation")"
+  [[ -f "$manifest" ]] || fail "active recovery manifest is missing: $generation" 65
+  validate_recovery_manifest_identity "$previous" "$generation"
+  require_command python3
+  python3 - "$PROJECT_ROOT/.runtime/generations" "$generation" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected = sys.argv[2]
+active = []
+for path in root.glob('g[0-9][0-9][0-9]/manifest.json'):
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid recovery manifest: {path}: {error}") from error
+    if payload.get('state') == 'ACTIVE':
+        active.append(path.parent.name)
+payload = json.loads((root / expected / 'manifest.json').read_text(encoding='utf-8'))
+if active != [expected]:
+    raise SystemExit(f"expected unique ACTIVE recovery manifest {expected}, got {sorted(active)}")
+if payload.get('phase') != 'complete' or payload.get('previous_generation') != 'g001' or payload.get('new_generation') != expected:
+    raise SystemExit('recovery manifest is not the approved ACTIVE complete g001-to-g002 transition')
+PY
+}
+
+resume_generation() {
+  (($# == 1)) || fail "usage: scripts/lab resume <gNNN>" 64
+  local generation="$1"
+  local container state
+  validate_generation_name "$generation"
+  [[ "$generation" != "$DEFAULT_GENERATION" ]] \
+    || fail "resume is only for an existing successor generation" 64
+  require_generation_contract "$generation"
+  require_command docker
+  require_active_recovery_manifest "$generation"
+  container="$(generation_consumer_container_name "$generation")"
+  verify_recovery_consumer_scope "$generation"
+  state="$(docker inspect --format '{{.State.Status}}' "$container")"
+  if [[ "$state" != "running" ]]; then
+    docker start "$container" >/dev/null
+  fi
+  verify_recovery_consumer_scope "$generation"
+  printf 'resumed exact recovery consumer generation=%s container=%s\n' \
+    "$generation" "$container"
+}
+
 ensure_recovery_consumer() {
   local generation="$1"
   local container volume state
@@ -1472,6 +1529,7 @@ main() {
     up) up_services "$@" ;;
     bootstrap) bootstrap_generation "$@" ;;
     migrate) migrate_sink "$@" ;;
+    resume) resume_generation "$@" ;;
     status) status_generation "$@" ;;
     lag) lag_generation "$@" ;;
     stop) stop_services "$@" ;;

@@ -1234,3 +1234,339 @@ none
 
 ### Next action
 Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
+
+## TASK_ID: R-09
+
+- Source: `docs/bootstrap.md`, раздел 6.3, строка задачи `R-09`; acceptance/evidence contract — разделы 7–8; behavioral criteria — `docs/spec.md` §9, `AC-001`–`AC-014`
+- Status: BLOCKED
+- Updated: 2026-10-30T23:43:44+03:00
+- Baseline HEAD: `ece679fc137bc0c4cd430c6c0484638b672cf3c0`
+
+### Progress
+- Implemented: B18 завершён: WAL exact boundaries и inverse negatives, exact table configs/9 ranges, bounded Kafka closed-segment deletion (`start 0→1512`, `end 2048`) и runtime restoration подтверждены. Cleanup запускается после любой create attempt, exact-validates generated topic name и использует anchored escaped Kafka regex для list/delete; timeout, absent, foreign-match и wait-for-absence regressions проходят. Final exact-image unit 80 tests и repeated AC-011 PASS.
+- Remaining: B19 (AC-007 failure cleanup) остаётся единственным OPEN blocker общего R-09; в scope текущего B18 run ничего не осталось.
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/bootstrap.md` §6.3, `R-09`, наблюдаемый выход | FAIL | B18/AC-011 targeted runtime PASS; final exact-image `scripts/check unit` 80 tests, exit 0 за 1.74 s; `scripts/check smoke`, exit 0 за 56.54 s; `git diff --check`/LSP PASS. Общий R-09 остаётся неприемлемым только из-за OPEN B19/AC-007; full acceptance намеренно не запускался до его закрытия. |
+| `docs/spec.md` §9, `AC-001` | PASS | g002 source/projection parity, raw snapshot events всех трёх tables и connector/task RUNNING; atomic evidence bundle опубликован. |
+| `docs/spec.md` §9, `AC-002` | PASS | standard final: `scripts/check acceptance AC-002`, exit 0 за 63.65 s — complete create/update rows customers/orders/payments совпали между source и projection; ровно 6 новых unique applied raw records; exact g002 coordinates `customers:3:c@1:27`, `orders:103:c@0:26`, `payments:1002:c@2:25`, `customers:1:u@0:11`, `orders:103:u@0:27`, `payments:1002:u@2:26`; evidence row SHA-256 опубликованы. |
+| `docs/spec.md` §9, `AC-003` | PASS | deterministic aggregate удалён `payment → order → customer`; delete+tombstone archived, projection absent, delete watermark retained. |
+| `docs/spec.md` §9, `AC-004` | PASS | final active g002 coordinate `cdc.g002.public.customers:2:20`: complete customer row including timestamps matched source immediately after durable fault, remained byte-for-value identical after duplicate retry, one raw row reached delivery_count=2 and offset advanced exactly to 21. One-off cleanup is forced before official restart. |
+| `docs/spec.md` §9, `AC-005` | PASS | deterministic reversed-source fixture: newer applied, older archived stale, projection/watermark retain newest token. |
+| `docs/spec.md` §9, `AC-006` | PASS | deterministic delete fixture: old update stale, delete watermark retained, row not resurrected. |
+| `docs/spec.md` §9, `AC-007` | BLOCKED | provenance/current-state assertions pass, but final review found no schema-v1 failure guard restoring a consistent runtime when the lab was initially running; a mid-transition error can leave the active consumer stopped and cascade later probes. |
+| `docs/spec.md` §9, `AC-008` | PASS | independent child-before-parent processor regression passed; final active source/sink domain parity confirmed. |
+| `docs/spec.md` §9, `AC-009` | PASS | stopped consumer exposed positive per-partition lag; `lab lag` separately reported durable event age and retained WAL; catch-up/parity restored. |
+| `docs/spec.md` §9, `AC-010` | PASS | acceptance final after review-fix: `scripts/check acceptance AC-010`, exit 0 за 77.62 s. Structured artifact SHA-256 `b82cd628…c153d` содержит exact manifest/marker/checksum maps/history; два connector-RUNNING checkpoint с complete timestamped rows, `ingestion_errors=0`, exact 3×3 lag zero, одинаковым row hash `40ea99eb…c70f7` и interval 24.685 s. Existing SQLite file and directory оба отвергли write probes; runtime returned to `initial_stopped`. |
+| `docs/spec.md` §9, `AC-011` | PASS | acceptance final after exact-selector fix: `scripts/check acceptance AC-011`, exit 0 за 77.16 s; exact table configs/9 partition ranges проверены, shell validator классифицировал `536870911=OK`, `536870912=WARNING`, `536870913=WARNING` и отклонил inverse cases. Probe `cdc.g002.acceptance.retention-probe-1212174-252718800`: log-start `0→1512`, log-end `2048→2048`, `cleanup_absent=true`; runtime returned to `initial_stopped`. Evidence: `.runtime/evidence/g002/AC-011/20261030T203607.546602Z/index.json`. |
+| `docs/spec.md` §9, `AC-012` | PASS | malformed fixture preserved durable error/attempts, no projection/raw apply or offset commit, nonzero error and same-coordinate retry. |
+| `docs/spec.md` §9, `AC-013` | PASS | evolved-state source contract, exact role/grants, expected SQLSTATE `42501` DML denial and active connector snapshot/streaming passed. |
+| `docs/spec.md` §9, `AC-014` | PASS | Connect restart preserved snapshot count/slot state; a new source update produced a new raw record and updated sink. |
+
+### Issues
+#### R-09/B01
+- State: RESOLVED
+- Category: PERMISSION
+- Affects: обязательные gates `EVIDENCE_GATE`, `FRESH_READ_ONLY_REVIEW`; `AC-001`–`AC-014`
+- Problem: R-09 требует фактических end-to-end acceptance probes, но предыдущий запрос не содержал отдельного явного разрешения на обращение к Docker daemon, запуск контейнеров и изменение generation-scoped PostgreSQL/Kafka/SQLite runtime data.
+- Evidence: предыдущая попытка ограничилась read-only repository inspection и сохранила `BLOCKED`; текущий пользовательский запрос явно разрешил Docker/runtime-действия.
+- Unblock: пользователь явно разрешает generation-scoped Docker preflight/start/stop и bounded acceptance probes R-09 без image pulls, удаления volumes, `destroy` или broad cleanup.
+- Resolution: разрешение получено; `scripts/lab preflight` завершился exit 0 за 1.08 s, подтвердил exact cached images, 16 CPU, 23 GiB memory, 11 GiB Docker storage и валидный g001 Compose; project services зафиксированы как `initial_stopped`.
+
+#### R-09/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-011`; обязательный gate `EVIDENCE_GATE`
+- Problem: AC-011 probe требует literal `safe_wal_size` в `scripts/lab lag` output, но approved command выводит slot metric positional row; корректный runtime ошибочно получает FAIL evidence.
+- Evidence: `scripts/check acceptance AC-011`, exit 1; evidence assertion `topic_retention` содержит `AcceptanceError: retention or slot limit evidence is missing`, при этом prior `scripts/lab lag g002` вывел exact retention rows и `postgres_cdc_g002|reserved|...|<numeric safe_wal_size>|OK`.
+- Unblock: проверять section header и строгую positional slot row, затем повторить AC-011.
+- Resolution: positional slot-row parser добавлен и покрыт positive/three negative cases; повторный `scripts/check acceptance AC-011` завершился exit 0 и опубликовал PASS evidence. Полный acceptance run также подтвердил AC-011 PASS.
+
+#### R-09/B03
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-013`; обязательный gate `EVIDENCE_GATE`
+- Problem: AC-013 probe запускает initial-seed `verify-access.sh`, который намеренно требует counts `2|2|1` и потому ложно отклоняет evolved source после завершённого streaming/delete сценария.
+- Evidence: полный `scripts/check acceptance all`, exit 1 после 163.54 s; AC-001–AC-012/014 PASS, AC-013 FAIL с `30-verify-bootstrap.sql` PL/pgSQL RAISE после изменившихся fixture counts.
+- Unblock: использовать evolved-state source-contract verifier, exact catalog/grant assertions и отдельную ожидаемо неуспешную connector-role DML transaction; повторить AC-013 и affected full acceptance.
+- Resolution: probe заменён на evolved-state source verifier, exact seven-boolean role/grant catalog assertion и expected SQLSTATE `42501` transaction; targeted AC-013 и финальный `acceptance all` завершились PASS.
+
+#### R-09/B04
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap.md` §7.1 smoke gate; обязательный `FINAL_EVIDENCE_AND_DIFF_GATE`
+- Problem: `scripts/check smoke` считает только Compose g001 consumer и ошибочно трактует корректное active g002 состояние как partial `3/4 running`.
+- Evidence: после успешного final acceptance core services и g002 consumer running, g001 consumer archived/stopped; `scripts/check smoke` завершился exit 69 за 0.57 s: `found 3/4 running`.
+- Unblock: сделать smoke generation-aware: считать active recovery consumer, принимать только полностью stopped или core+active-consumer running, затем повторить smoke.
+- Resolution: smoke теперь определяет active generation, учитывает external recovery consumer и принимает только полностью stopped либо core+active-consumer running; targeted regression и `scripts/check smoke` завершились PASS за 14.34 s на g002.
+
+#### R-09/B05
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-009`; обязательный `EVIDENCE_GATE`
+- Problem: после paused-consumer probe catch-up использует фиксированный 30-second inner wait и недостаточно строгую интерпретацию Kafka empty-partition `- / 0 / -`, что делает full acceptance flaky.
+- Evidence: index-enabled `acceptance all`, exit 1 после 180.87 s; AC-009 FAIL `consumer lag did not reach zero`, остальные 13 AC PASS; run-level FAIL index опубликован под `.runtime/evidence/g002/runs/`.
+- Unblock: валидировать zero lag как exact numeric current=end/lag=0 либо empty `-/0/-`, использовать весь remaining parity timeout, затем повторить AC-009 и full acceptance.
+- Resolution: zero-lag predicate принимает только exact `-/0/-` либо numeric `current=end, lag=0`, а parity использует весь remaining timeout; positive/three negative unit cases, targeted AC-009 PASS за 57.91 s и final indexed acceptance 14/14 PASS за 206.12 s.
+
+#### R-09/B06
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-001`, `AC-003`, `AC-007`; обязательный `FRESH_READ_ONLY_REVIEW`
+- Problem: source/sink parity и delete fixture безусловно требуют `customers.phone`, а AC-007 проверяет только уже эволюционировавший sink; clean g001 schema-v1 acceptance не воспроизводится.
+- Evidence: fresh reviewer call 1: `source_projection_rows()` и delete insert обращаются к отсутствующей до AC-007 колонке, а `probe_ac007()` не выполняет live stop/migrate/replay transition.
+- Unblock: сделать parity/delete schema-aware; на schema v1 выполнить live AC-007 transition, а на completed schema v2 требовать сохранённое prior PASS evidence плюс current migration/projection state.
+- Resolution: prior selection now uses the canonical evidence schema validator, exact assertion names, observations artifact SHA-256/content match, permitted origin modes, same coordinate across assertions and exact offset N/N/N+1 consistency; completed rerun consumes parsed validated values. Malformed/legacy/inconsistent evidence regressions pass; targeted/full AC-007 pass.
+
+#### R-09/B07
+- State: RESOLVED
+- Category: CODE
+- Affects: runtime preservation; обязательный `FRESH_READ_ONLY_REVIEW`
+- Problem: acceptance runner поднимает stopped runtime, но не восстанавливает `initial_stopped` при success, failure, setup error или index publication error.
+- Evidence: fresh reviewer call 1: `ensure_runtime()` запускает services, а `main()` не имеет cleanup/finally; manual stop основной сессии не делает command safe/reproducible.
+- Unblock: классифицировать initial state как fully stopped/running, отклонять partial state и выполнять `lab stop` в `finally` только для runtime, поднятого acceptance command; добавить success/failure cleanup regressions.
+- Resolution: runner classifies fully stopped/running state before mutation and uses `finally` to `lab stop` only when it raised the lab. Success/failure cleanup unit regressions pass; targeted AC-007 and full acceptance both returned all containers to stopped state automatically.
+
+#### R-09/B08
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-010`, smoke/runtime idempotency; обязательный `FRESH_READ_ONLY_REVIEW`
+- Problem: smoke/acceptance возобновляют stopped ACTIVE g002 через повторный `new-generation`, а AC-010 hard-code-ит g002; recovery повторно перезаписывает archive metadata и не обобщается на active generation.
+- Evidence: fresh reviewer call 1 сопоставил `ensure_runtime`, smoke и `archive_generation_sink`: повторный recovery меняет `.cdc-generation-archived.json` и `archived_at`, поэтому это не read-only resume.
+- Unblock: exact-validate и безопасно `docker start` существующий active recovery consumer; `new-generation g002` вызывать только при переходе g001→g002, а existing active successor проверять read-only.
+- Resolution: `lab resume` now requires the approved g002 successor, exact manifest identity, unique ACTIVE manifest, `phase=complete` and g001 predecessor before container inspection/start. Static regressions cover manifest gate text; exact-resume runtime smoke passed.
+
+#### R-09/B10
+- State: RESOLVED
+- Category: CODE
+- Affects: generation-aware smoke safe resume
+- Problem: first targeted smoke after B08 fix rejected the valid g002 consumer because shell expected the successor volume with `_consumer-data` instead of the implemented `-consumer-data` suffix.
+- Evidence: `scripts/check smoke` exited 70 before start; exact inspect showed expected `cdc-lab-g002_consumer-data`, actual approved `cdc-lab-g002-consumer-data`; cleanup restored stopped state.
+- Unblock: align shell exact-scope expectation with `consumer_volume()`/recovery naming and rerun smoke.
+- Resolution: successor volume expectation corrected to `cdc-lab-g002-consumer-data`; repeated smoke passed and automatically restored stopped state.
+
+#### R-09/B11
+- State: RESOLVED
+- Category: CODE
+- Affects: runtime state safety, smoke and acceptance startup
+- Problem: fully stopped/running classification ignores running inactive g001 or additional labeled generation consumers.
+- Evidence: reviewer call 2: active g002 plus running g001 can be accepted even though `lab stop` treats all generation consumers as project runtime.
+- Unblock: enumerate Compose g001 and all labeled generation consumers; reject any running inactive generation and add regressions.
+- Resolution: Python and shell startup inventory now reject running inactive Compose g001 or labeled successor consumers; multiple ACTIVE manifests fail closed. Unit regressions cover multiple ACTIVE and active g002 + running g001.
+
+#### R-09/B12
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-010`
+- Problem: AC-010 does not fail closed on multiple ACTIVE manifests and does not assert exact manifest identity/checksums, archive-marker content, parity or lag zero twice.
+- Evidence: reviewer call 2: `status`/`lag` output alone cannot prove summaries currently published for AC-010.
+- Unblock: exact g001→g002 manifest/marker validation, unique ACTIVE manifest, actual parity+zero-lag twice ≥5 s apart and hash evidence.
+- Resolution: reviewer call 1 findings закрыты targeted checks: existing-file/directory write denial regression, connector status per checkpoint, exact topic-partition mutations и summary-only rejection; unit 74 PASS, runtime AC-010 PASS, structured artifact `ac-010-recovery.json` validated and hashed.
+
+#### R-09/B13
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-004`
+- Problem: g002 evidence hard-codes archived g001 duplicate coordinates, violating generation-scoped evidence.
+- Evidence: reviewer call 2: `probe_ac004()` reads `sink_json("g001")` while evidence top-level generation is g002.
+- Unblock: execute controlled post-SQLite/pre-offset fault and retry on the passed active generation, then verify raw uniqueness/delivery count/projection/offset there.
+- Resolution: AC-004 now normalizes full source/sink customer rows including created_at/updated_at, proves the source row changed, matches it immediately after durable fault, and requires the identical complete row after duplicate retry. Targeted/full g002 evidence pass.
+
+#### R-09/B14
+- State: RESOLVED
+- Category: TEST
+- Affects: targeted `AC-004`
+- Problem: after fault container exit, group describe exposed only seven committed rows because empty assigned partitions disappear without an active member; strict nine-row parser caused false failure.
+- Evidence: targeted AC-004 FAIL `expected 9 consumer-group rows, got 7`.
+- Unblock: query the exact fault topic/partition committed offset directly while no member is active.
+- Resolution: added exact `committed_offset()` parser for the fault coordinate; later targeted/full AC-004 passed.
+
+#### R-09/B15
+- State: RESOLVED
+- Category: TEST
+- Affects: targeted `AC-004`
+- Problem: post-fault SQLite WAL required writable-volume recovery, while generic stopped-sink inspector mounted the volume read-only.
+- Evidence: targeted AC-004 FAIL `sqlite3.OperationalError: unable to open database file`; no fault container remained and initial stopped state was restored.
+- Unblock: inspect the stopped fault sink through a network-none, read-only-root container with only the named sink volume writable.
+- Resolution: added bounded writable-volume JSON inspector for this post-fault durability check; targeted/full AC-004 passed and no temporary container remains.
+
+#### R-09/B16
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-004` fault cleanup
+- Problem: `docker run --rm` fault container can survive a client timeout; finally only restarts official consumer, risking concurrent volume/group use.
+- Evidence: reviewer call 3 analysis of fixed-name one-off and `subprocess.TimeoutExpired` path.
+- Unblock: force-remove named fault container in finally before official restart; add timeout regression.
+- Resolution: AC-004 finally now force-removes any surviving named fault container before restarting the official consumer; unit regression asserts removal-before-start, targeted/full runs leave zero fault containers.
+
+#### R-09/B17
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-002`; `EVIDENCE_GATE`
+- Problem: streaming probe updates only one customer timestamp and can PASS with broken order/payment create/update handling.
+- Evidence: final reviewer call 4, `tests/acceptance/run_acceptance.py` AC-002 vs `docs/spec.md` AC-002.
+- Unblock: deterministic creates and updates for all three tables; exact per-table coordinates, unique raw records and complete source/projection values.
+- Resolution: AC-002 now verifies canonical create values and subsequent updates for all three tables, complete timestamp/decimal source-sink rows and one new applied raw coordinate per operation. Targeted runtime PASS with six exact coordinates; exact-image suite 70 tests PASS.
+
+#### R-09/B20
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-002`; evidence publication
+- Problem: полные AC-002 row values сделали assertion summary длиннее допустимого evidence schema, поэтому поведенчески успешный probe опубликован как FAIL.
+- Evidence: targeted `scripts/check acceptance AC-002`, exit 1 за 65.83 s; failure bundle сообщает `EvidenceError: assertions[0].summary is too long`, runtime автоматически возвращён в `initial_stopped`.
+- Unblock: оставить полное сравнение в assertion, а в evidence публиковать bounded SHA-256 row fingerprints и компактные coordinates; повторить targeted acceptance.
+- Resolution: bounded create/update SHA-256 summaries и compact coordinates приняты evidence schema; повторный targeted AC-002 завершился PASS за 63.65 s.
+
+#### R-09/B21
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: первый reviewer-вызов текущей попытки подтвердил направление B17, но завершился timeout до полного отчёта и финального verdict.
+- Evidence: reviewer call 1, timeout 300 s; partial output подтвердил exact six-operation target, tracked files не изменены, итоговый `VERDICT` отсутствует.
+- Unblock: повторить bounded fresh read-only review с фокусом на B17 fix blast radius, status consistency и explicit open B12/B18/B19.
+- Resolution: reviewer call 2 завершился с полным отчётом и `VERDICT BLOCK`, подтвердил B17 RESOLVED и локализовал единственный blocker в stale status action.
+
+#### R-09/B22
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FINAL_EVIDENCE_AND_DIFF_GATE`
+- Problem: reviewer call 2 подтвердил B17, но обнаружил stale `Next action`, всё ещё требующий реализовать уже закрытый B17.
+- Evidence: fresh reviewer call 2, `VERDICT BLOCK`; единственный BLOCKER — `docs/status.md` Next action не соответствует RESOLVED B17. Неблокирующая рекомендация — добавить явную missing-order mutation.
+- Unblock: актуализировать Next action, добавить bounded missing-order regression, повторить affected fast checks и fresh review.
+- Resolution: reviewer call 3 подтвердил исправленный action, explicit missing-order mutation, B17 RESOLVED и status consistency; `VERDICT OK`.
+
+#### R-09/B18
+- State: RESOLVED
+- Category: TEST
+- Affects: `AC-011`; `EVIDENCE_GATE`
+- Problem: probe did not exercise 512 MiB WAL warning boundary or Kafka eligible segment deletion/log-start movement.
+- Evidence: final reviewer call 4 found that the old row accepted OK/WARNING and `kafka-get-offsets` only checked nonempty output. First targeted attempt failed safely because Kafka 4.3 enforces `segment.bytes >= 1048576`; FAIL bundle `20261030T201355.489409Z`, no leaked topic, runtime stopped.
+- Unblock: use the Kafka-enforced minimum 1 MiB segment size with a bounded multi-segment payload, then prove exact WAL boundary classification and actual log-start movement while log-end remains unchanged.
+- Resolution: generated probe name is strict-validated and converted to anchored escaped Kafka regex for both list/delete; regression proves exact match and rejects dot-replaced/unsafe names. Cleanup remains idempotent after every create attempt. Exact-image 80 tests and AC-011 PASS with `cleanup_absent=true`; runtime stopped.
+
+#### R-09/B19
+- State: OPEN
+- Category: CODE
+- Affects: `AC-007`, runtime preservation
+- Problem: schema-v1 transition lacks failure cleanup after stopping consumer; initially running lab can remain partial on any intermediate error.
+- Evidence: final reviewer call 4; outer cleanup only stops lab when initial state was stopped.
+- Unblock: guarded transition restoring migrated+running state when safe or a fully stopped explicit state; abort remaining `all` probes if restoration fails.
+- Resolution: pending; fix budget exhausted
+
+#### R-09/B09
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный `FRESH_READ_ONLY_REVIEW`
+- Problem: reviewer call 1 timed out после содержательных findings и не вернул финальный verdict.
+- Evidence: timeout 300 s; read-only reviewer не изменил tracked files, partial report содержит B06–B08.
+- Unblock: закрыть B06–B08 checks и выполнить fresh re-review в оставшемся бюджете.
+- Resolution: final fresh review completed in call 4 with `VERDICT BLOCK`; review requirement executed, but task remains incomplete.
+
+### Review
+- Verdict: OK
+- Calls: 4
+- Fix iterations: 3
+- Details: calls 1–2 выявили create-timeout cleanup и Kafka regex-selector blockers; targeted fixes закрыли оба. Calls 3–4 проверили финальный B18 code/test/evidence diff и status consistency, `VERDICT OK`. DEFERRED только B19; обязательных B18 findings и improvements не осталось.
+
+### Next action
+Пользователю поручить отдельный implementation run для R-09/B19 (AC-007 failure cleanup и abort дальнейших `all` probes при неуспешном восстановлении).
+
+## TASK_ID: R-09/B19
+
+- Source: пользовательский вызов `R-09/B19`; исходная проблема — `docs/status.md`, секция `R-09`, issue `R-09/B19`; behavioral contract — `docs/spec.md` §9, `AC-007`
+- Status: REVIEW_READY
+- Updated: 2026-10-31T00:22:44+03:00
+- Baseline HEAD: `ece679fc137bc0c4cd430c6c0484638b672cf3c0`
+
+### Progress
+- Implemented: guarded AC-007 restoration возвращает migrated+running parity, а при неуспехе выполняет fail-closed `lab stop`; любое fallback invocation/verification failure преобразуется в `RuntimeRestorationError`, публикует FAIL evidence и прерывает remaining `all` probes. Lag inventory exact-validates полный group-row multiset approved topics × partitions 0..2, включая foreign extra rows. Runbook/help синхронизированы. Final exact-image unit/AC-007 прошли; runtime `initial_stopped`.
+- Remaining: none
+
+### AC evidence
+| AC / ссылка на источник | Result | Проверка / evidence / причина |
+|---|---|---|
+| `docs/spec.md` §9, `AC-007`; runtime preservation gate | PASS | fast final: 7 focused post-review tests PASS, включая extra-foreign row и fallback stop timeout; exact-image `scripts/check unit` — 88 tests, exit 0 за 1.88 s. standard: live injected-failure restoration stop/migrate/restart ранее восстановил g002 running parity за 12.16 s; final `scripts/check acceptance AC-007`, exit 0 за 68.31 s, evidence `.runtime/evidence/g002/AC-007/20261030T211536.621207Z/index.json`; LSP 0 findings, `bash -n scripts/check`/`git diff --check` PASS; runtime stopped. |
+
+### Issues
+#### R-09/B19/B01
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-007`, runtime preservation, `EVIDENCE_GATE`
+- Problem: schema-v1 transition lacks failure cleanup after stopping consumer; initially running lab can remain partial on any intermediate error.
+- Evidence: `probe_ac007()` выполнял stop → schema change → fail-stop → migrate → restart без guarded cleanup; `run_acceptance()` вызывал `lab stop` только для initial_stopped.
+- Unblock: восстановить consistent migrated+running state, когда это безопасно; при невозможности перевести lab в fully stopped explicit state и прервать remaining `all` probes.
+- Resolution: helper exact-validates running restoration through status, complete lag inventory and projection parity; migration/start failure regression подтверждает fully-stopped fallback, а orchestration regression — abort до AC-008/AC-010. Live restoration и targeted AC-007 завершились PASS.
+
+#### R-09/B19/B02
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-007`, runtime restoration evidence
+- Problem: successful restart path immediately calls strict 9-row `lag_rows`; после restart inactive empty partitions временно отсутствуют в group describe, поэтому безопасно восстановленный consumer ошибочно классифицируется как restoration failure.
+- Evidence: live injected restoration probe: core/resume succeeded, helper stopped/migrated/restarted g002, затем `expected 9 consumer-group rows, got 7`; fallback `lab stop` succeeded and final runtime is fully stopped.
+- Unblock: restoration wait должен терпеть временно неполный group describe в bounded timeout, не ослабляя final exact 9-row zero-lag/parity assertion.
+- Resolution: bounded inventory wait переждал transient incomplete group rows; повторный live probe восстановил `running` за 12.16 s, `lab status g002` прошёл, затем `lab stop` подтвердил `final_runtime=stopped`.
+
+#### R-09/B19/B03
+- State: RESOLVED
+- Category: CODE
+- Affects: `AC-007`, strict final 3×3 zero-lag restoration assertion
+- Problem: `lag_rows()` проверяет только число 9 и topic prefix, поэтому missing approved topic может быть заменён foreign topic либо duplicate coordinate.
+- Evidence: reviewer call 1, `VERDICT BLOCK`: 3 customers + 3 orders + 3 `cdc.g002.public.extra` rows проходят length check; текущий retry test ошибочно принимает one-row inventory.
+- Unblock: exact-validate approved three topics × partitions 0..2, reject duplicate/foreign/out-of-range coordinates и усилить tests.
+- Resolution: `lag_rows()` сравнивает exact coordinate set approved topics × `{0,1,2}`, rejects foreign topic, duplicate+missing coordinate и partition 3; targeted mutations и final exact-image/AC-007 checks прошли.
+
+#### R-09/B19/B04
+- State: RESOLVED
+- Category: CODE
+- Affects: operator runbook, abort semantics
+- Problem: runbook безусловно обещает, что `acceptance all` продолжает после любого failure, но restoration failure теперь обязан немедленно abort remaining probes.
+- Evidence: reviewer call 1, `VERDICT BLOCK`, `docs/runbook.md` §Verification.
+- Unblock: документировать продолжение после ordinary criterion FAIL и fail-closed abort после AC-007 runtime restoration failure.
+- Resolution: runbook теперь явно продолжает `all` после ordinary criterion FAIL, но после неуспешной AC-007 restoration публикует FAIL evidence и немедленно aborts remaining probes.
+
+#### R-09/B19/B05
+- State: RESOLVED
+- Category: CODE
+- Affects: strict lag inventory
+- Problem: `lag_rows()` игнорирует valid data rows вне generation prefix, поэтому approved 9 rows + foreign 10th row ошибочно проходят.
+- Evidence: reviewer call 2, `VERDICT BLOCK`; строка `group unrelated.topic 0 4 4 0 ...` silently skipped.
+- Unblock: отличать header/non-data от actual group rows и exact-validate полный observed coordinate multiset; добавить extra-foreign-row regression.
+- Resolution: parser распознаёт actual data rows по exact consumer group, не фильтрует по topic prefix и сравнивает полный multiset с approved 3×3 coordinates; regression отклоняет foreign 10th row.
+
+#### R-09/B19/B06
+- State: RESOLVED
+- Category: CODE
+- Affects: fail-closed abort remaining `all` probes
+- Problem: exception/timeout самого fallback `lab stop` escapes как ordinary exception, поэтому `execute_one()` может продолжить remaining probes.
+- Evidence: reviewer call 2: fallback stop invocation находится вне nested guard; tests покрывают только returncode 0.
+- Unblock: преобразовать любое invocation/verification failure fallback в `RuntimeRestorationError`; добавить timeout regression.
+- Resolution: fallback stop invocation и state verification обёрнуты в fail-closed guard; `TimeoutExpired` regression получает `RuntimeRestorationError`, который существующий orchestration test прерывает до AC-008/AC-010.
+
+#### R-09/B19/B07
+- State: RESOLVED
+- Category: CODE
+- Affects: operator documentation and command help
+- Problem: runbook связывает abort только с невозможностью verify fully stopped fallback, хотя любой running-state restoration failure должен abort даже после successful safe stop; `scripts/check` обещает every AC without safety exception.
+- Evidence: reviewer call 2, `VERDICT BLOCK`.
+- Unblock: синхронизировать runbook/help с actual fail-closed semantics.
+- Resolution: runbook/help теперь явно указывают, что ordinary FAIL продолжается, но любой AC-007 running-state restoration failure aborts after evidence; verified safe stop не возобновляет run, unverified fallback fails closed.
+
+#### R-09/B19/B08
+- State: RESOLVED
+- Category: REVIEW
+- Affects: `FINAL_EVIDENCE_AND_DIFF_GATE`; status consistency
+- Problem: после reviewer call 3 поле Progress/Remaining всё ещё указывало на ожидаемый re-review, хотя `VERDICT OK` уже получен; Progress не входит в узкую служебную финализацию.
+- Evidence: финальное перечитывание после call 3 обнаружило stale `Remaining: fresh re-review...` при отсутствии оставшейся implementation/check работы.
+- Unblock: установить `Remaining: none` и выполнить последний fresh read-only review status consistency в пределах call 4 / fix iteration 3.
+- Resolution: reviewer call 4 проверил исправленный Progress, неизменный code/evidence diff и status consistency; `VERDICT OK`.
+
+### Review
+- Verdict: OK
+- Calls: 4
+- Fix iterations: 3
+- Details: calls 1–2 выявили B03–B07; call 3 подтвердил все code/test/docs fixes и финальное evidence; call 4 проверил status-only B08 correction и полный неизменный diff. BLOCKER/DEFERRED/IMPROVEMENT отсутствуют, итоговый `VERDICT OK`.
+
+### Next action
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.

@@ -14,8 +14,9 @@ Usage:
   scripts/check acceptance AC-001
   scripts/check acceptance all
 
-E-07 provides deterministic fixtures and the evidence contract. Acceptance orchestration
-is added by R-09; until then selectors fail closed and are never reported as passes.
+Acceptance checks publish redacted generation-scoped evidence under .runtime/evidence.
+The all selector continues after ordinary AC failures, but aborts after an AC-007
+runtime-restoration failure; any completed failure makes the command return nonzero.
 EOF
 }
 
@@ -23,6 +24,73 @@ consumer_python_version_probe() {
   docker run --rm --network none --read-only --tmpfs /tmp:size=16m \
     "$CONSUMER_IMAGE" \
     python -c 'import platform; actual = platform.python_version(); expected = "3.12.12"; assert actual == expected, f"expected Python {expected}, got {actual}"; print(f"python={actual}")'
+}
+
+detect_active_generation() {
+  require_command python3
+  python3 - <<'PY'
+import json
+from pathlib import Path
+
+active = []
+root = Path('.runtime/generations')
+if root.is_dir():
+    for path in root.glob('g[0-9][0-9][0-9]/manifest.json'):
+        try:
+            payload = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get('state') == 'ACTIVE':
+            active.append(path.parent.name)
+if len(active) > 1:
+    raise SystemExit(f"multiple ACTIVE generation manifests: {sorted(active)}")
+print(active[0] if active else 'g001')
+PY
+}
+
+active_consumer_state() {
+  local generation="$1"
+  if [[ "$generation" == "$DEFAULT_GENERATION" ]]; then
+    service_state consumer
+    return
+  fi
+  local container="cdc-lab-${generation}-consumer"
+  if ! docker inspect "$container" >/dev/null 2>&1; then
+    printf 'missing\n'
+    return
+  fi
+  docker inspect --format '{{.State.Status}}' "$container"
+}
+
+running_inactive_consumers() {
+  local active_generation="$1"
+  local active_container="cdc-lab-${active_generation}-consumer"
+  local name
+  if [[ "$active_generation" != "$DEFAULT_GENERATION" \
+    && "$(service_state consumer)" == "running" ]]; then
+    printf '%s\n' "cdc-lab-g001-consumer-1"
+  fi
+  while IFS= read -r name; do
+    [[ -n "$name" && "$name" != "$active_container" ]] || continue
+    printf '%s\n' "$name"
+  done < <(
+    docker ps \
+      --filter label=io.kafka-debezium-cdc.lab=cdc-lab \
+      --filter label=io.kafka-debezium-cdc.role=generation-consumer \
+      --format '{{.Names}}'
+  )
+}
+
+wait_generation_status() {
+  local generation="$1" attempt
+  for attempt in {1..60}; do
+    if "$LAB" status "$generation" >/dev/null 2>&1; then
+      "$LAB" status "$generation"
+      return
+    fi
+    sleep 2
+  done
+  fail "generation did not become ready: $generation" 1
 }
 
 unit_checks() {
@@ -77,24 +145,38 @@ smoke_cleanup() {
 smoke_checks() {
   require_no_arguments "$@"
   require_command docker
-  local running_services=0
+  local active_generation core_running=0 active_state inactive_running
   local service
-  for service in postgres kafka connect consumer; do
+  active_generation="$(detect_active_generation)"
+  for service in postgres kafka connect; do
     if [[ "$(service_state "$service")" == "running" ]]; then
-      running_services=$((running_services + 1))
+      core_running=$((core_running + 1))
     fi
   done
-  case "$running_services" in
-    0) smoke_cleanup_needed=1 ;;
-    4) smoke_cleanup_needed=0 ;;
-    *) fail "smoke requires all project services either stopped or already running; found $running_services/4 running" 69 ;;
-  esac
+  active_state="$(active_consumer_state "$active_generation")"
+  inactive_running="$(running_inactive_consumers "$active_generation")"
+  [[ -z "$inactive_running" ]] \
+    || fail "smoke refuses running inactive generation consumers: $inactive_running" 69
+  if ((core_running == 0)) && [[ "$active_state" != "running" ]]; then
+    smoke_cleanup_needed=1
+  elif ((core_running == 3)) && [[ "$active_state" == "running" ]]; then
+    smoke_cleanup_needed=0
+  else
+    fail "smoke requires all core services and the active generation consumer either stopped or running; core=$core_running/3 generation=$active_generation consumer=$active_state" 69
+  fi
   trap smoke_cleanup EXIT
 
   "$LAB" preflight
   "$LAB" up
-  "$LAB" bootstrap "$DEFAULT_GENERATION"
-  "$LAB" status "$DEFAULT_GENERATION"
+  active_generation="$(detect_active_generation)"
+  if [[ "$active_generation" == "$DEFAULT_GENERATION" ]]; then
+    if ! "$LAB" status "$active_generation" >/dev/null 2>&1; then
+      "$LAB" bootstrap "$active_generation"
+    fi
+  else
+    "$LAB" resume "$active_generation"
+  fi
+  wait_generation_status "$active_generation"
 
   local postgres_version kafka_version
   postgres_version="$(
@@ -131,7 +213,7 @@ PY
   docker run --rm --network none --read-only --tmpfs /tmp:size=16m \
     "$CONSUMER_IMAGE" python /opt/cdc/consumer/check-runtime.py
   printf 'smoke checks passed generation=%s postgres=16.13 kafka=4.3.0 debezium=3.6.3.Final\n' \
-    "$DEFAULT_GENERATION"
+    "$active_generation"
 }
 
 acceptance_checks() {
@@ -140,7 +222,8 @@ acceptance_checks() {
   if [[ "$selector" != "all" && ! "$selector" =~ ^AC-0(0[1-9]|1[0-4])$ ]]; then
     fail "unknown acceptance selector: $selector" 64
   fi
-  fail "acceptance $selector is unavailable until R-09 adds end-to-end orchestration for the E-07 fixtures and evidence contract" 69
+  require_command python3
+  python3 "$PROJECT_ROOT/tests/acceptance/run_acceptance.py" "$selector"
 }
 
 main() {
