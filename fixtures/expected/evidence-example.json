@@ -1,0 +1,42 @@
+{
+  "format_version": 1,
+  "ac_id": "AC-005",
+  "generation": "g001",
+  "result": "PASS",
+  "started_at": "2026-10-30T06:00:00Z",
+  "finished_at": "2026-10-30T06:00:01Z",
+  "command": [
+    "scripts/check",
+    "acceptance",
+    "AC-005"
+  ],
+  "assertions": [
+    {
+      "name": "unique_raw_records",
+      "result": "PASS",
+      "summary": "both synthetic coordinates are archived exactly once"
+    },
+    {
+      "name": "stale_status",
+      "result": "PASS",
+      "summary": "older synthetic coordinate archived as stale"
+    },
+    {
+      "name": "latest_projection",
+      "result": "PASS",
+      "summary": "projection retains the newer source values"
+    },
+    {
+      "name": "watermark",
+      "result": "PASS",
+      "summary": "watermark retains the newer ordering token"
+    }
+  ],
+  "artifacts": [],
+  "redactions": [
+    "authentication_configuration",
+    "credentials",
+    "docker_inspect",
+    "environment_values"
+  ]
+}

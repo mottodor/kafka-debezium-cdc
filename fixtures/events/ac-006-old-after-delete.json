@@ -1,0 +1,99 @@
+{
+  "fixture_version": 1,
+  "ac_id": "AC-006",
+  "source": "docs/spec.md §9 AC-006",
+  "generation": "g001",
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "create",
+      "topic": "cdc.g001.public.customers",
+      "partition": 1,
+      "offset": 6001,
+      "key_id": 9002,
+      "operation": "c",
+      "source_lsn": 100,
+      "transaction_total_order": 1,
+      "transaction_data_collection_order": 1,
+      "before": null,
+      "after": {
+        "id": 9002,
+        "email": "fixture-9002@example.test",
+        "full_name": "Created Name",
+        "status": "active",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:00.000000Z"
+      }
+    },
+    {
+      "name": "delete",
+      "topic": "cdc.g001.public.customers",
+      "partition": 1,
+      "offset": 6002,
+      "key_id": 9002,
+      "operation": "d",
+      "source_lsn": 300,
+      "transaction_total_order": 1,
+      "transaction_data_collection_order": 1,
+      "before": {
+        "id": 9002,
+        "email": "fixture-9002@example.test",
+        "full_name": "Created Name",
+        "status": "active",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:00.000000Z"
+      },
+      "after": null
+    },
+    {
+      "name": "old_update",
+      "topic": "cdc.g001.public.customers",
+      "partition": 1,
+      "offset": 6003,
+      "key_id": 9002,
+      "operation": "u",
+      "source_lsn": 200,
+      "transaction_total_order": 1,
+      "transaction_data_collection_order": 1,
+      "before": {
+        "id": 9002,
+        "email": "fixture-9002@example.test",
+        "full_name": "Created Name",
+        "status": "active",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:00.000000Z"
+      },
+      "after": {
+        "id": 9002,
+        "email": "fixture-9002@example.test",
+        "full_name": "Must Not Resurrect",
+        "status": "inactive",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:01.000000Z"
+      }
+    }
+  ],
+  "expected": {
+    "outcomes": [
+      {"name": "create", "status": "applied", "duplicate": false},
+      {"name": "delete", "status": "applied", "duplicate": false},
+      {"name": "old_update", "status": "stale", "duplicate": false}
+    ],
+    "projection": null,
+    "watermark": {
+      "table": "customers",
+      "entity_key": "9002",
+      "phase_rank": 1,
+      "source_lsn": 300,
+      "transaction_total_order": 1,
+      "transaction_data_collection_order": 1,
+      "last_was_delete": 1
+    },
+    "raw": [
+      {"offset": 6001, "operation": "c", "processing_status": "applied"},
+      {"offset": 6002, "operation": "d", "processing_status": "applied"},
+      {"offset": 6003, "operation": "u", "processing_status": "stale"}
+    ],
+    "errors": []
+  }
+}

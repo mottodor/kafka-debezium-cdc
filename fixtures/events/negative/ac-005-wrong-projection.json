@@ -1,0 +1,18 @@
+{
+  "fixture_version": 1,
+  "base": "../ac-005-out-of-order.json",
+  "purpose": "deliberate failing fixture proving the oracle detects projection regression",
+  "expected_override": {
+    "projection": {
+      "table": "customers",
+      "id": 9001,
+      "row": {
+        "email": "fixture-9001@example.test",
+        "full_name": "Incorrect Expected Name",
+        "status": "inactive",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:02.000000Z"
+      }
+    }
+  }
+}

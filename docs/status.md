@@ -887,37 +887,127 @@ none
 ## TASK_ID: E-07
 
 - Source: `docs/bootstrap.md`, раздел 6.2, строка задачи `E-07`; fixtures/evidence requirements — разделы 7.2–7.3
-- Status: BLOCKED
-- Updated: 2026-10-29T22:58:50+03:00
-- Baseline HEAD: `76e239eb2fe31be8b8edd90801331cc5b2a895cd`
+- Status: REVIEW_READY
+- Updated: 2026-10-30T13:11:37+03:00
+- Baseline HEAD: `101b86235219cb2cda26cf156aa59fe9ab61bae9`
 
 ### Progress
-- Implemented: выполнен PRECHECK; подтверждены clean baseline и исходное состояние сервисов `initial_stopped` с сохранёнными 8 volumes/network. Product/test code не изменялся.
-- Remaining: реализовать обязательные зависимости `R-06`, `R-07`, `R-08`, затем добавить полный E-07 набор unit/integration/acceptance fixtures и redacted evidence format, выполнить проверки и независимый review.
+- Implemented: E-07 fixtures/oracles, полный acceptance manifest, atomic evidence writer и offline runner; общий credential validator теперь отклоняет split sensitive argv, option assignments и single-line sensitive assignments через единую vocabulary, сохраняя ordering-token exemptions. Targeted, host и exact-image checks прошли на финальном содержательном состоянии.
+- Remaining: none
 
 ### AC evidence
 | AC / ссылка на источник | Result | Проверка / evidence / причина |
 |---|---|---|
-| `docs/bootstrap.md` §6.2, `E-07`, критерий проверки | NOT_RUN | PRECHECK остановил реализацию: строка E-07 явно зависит от `R-01–R-08`, но текущий HEAD содержит только SQLite migration `0001_initial.sql`; `scripts/lab new-generation` fail-closed до R-08, а `scripts/check acceptance` fail-closed до E-07/R-09. Непустой финальный набор acceptance fixtures и deliberate failure нельзя достоверно проверить против отсутствующих R-06–R-08 contracts. |
+| `docs/bootstrap.md` §6.2, `E-07`, критерий проверки | PASS | fast final после B11 fix: targeted regressions 2 tests, exit 0, 0.09 s; direct probes отклонили split `--password`/`--auth`, access-key/auth assignments и JSON auth fields; host offline suite 54 tests, exit 0, 1.07 s; `py_compile`/`git diff --check`, exit 0; LSP Python/status files 0 findings. Standard final: `scripts/check unit` в exact Python 3.12.12 image, network=none, 54 tests, exit 0, 1.55 s. Deliberate failing fixture остаётся частью suite и завершился ожидаемым nonzero внутри assertion. |
 
 ### Issues
 #### E-07/B01
-- State: OPEN
+- State: RESOLVED
 - Category: SPEC
 - Affects: `docs/bootstrap.md` §6.2 `E-07`; обязательные gates `EVIDENCE_GATE` и `FRESH_READ_ONLY_REVIEW`
-- Problem: запрошенная задача начата до её утверждённых зависимостей `R-06`, `R-07`, `R-08`; реализация полного E-07 сейчас потребовала бы тестировать отсутствующее поведение либо самовольно сузить acceptance scope.
-- Evidence: в repository отсутствует schema migration v2 для `customers.phone`; `scripts/lib/common.sh` и `scripts/lab` явно блокируют generation tooling до R-08; `scripts/check` явно блокирует acceptance orchestration. Git baseline до status record был clean на HEAD `76e239e...`.
-- Unblock: пользователь поручает и завершает отдельные задачи `R-06`, затем `R-07`, затем `R-08`; после их review-ready checkpoints повторно запускается E-07.
-- Resolution: pending
+- Problem: предыдущая попытка E-07 была начата до утверждённых зависимостей `R-06`, `R-07`, `R-08`; реализация полного E-07 тогда потребовала бы тестировать отсутствующее поведение либо самовольно сузить acceptance scope.
+- Evidence: baseline предыдущей попытки `76e239e...` не содержал завершённых R-06–R-08 и acceptance path был fail-closed.
+- Unblock: завершить отдельные задачи `R-06`, `R-07`, `R-08`, затем повторно запустить E-07.
+- Resolution: текущий HEAD `101b862...` содержит review-ready реализации R-06, R-07 и R-08; schema migration v2 и generation recovery доступны, dependencies E-07 выполнены.
+
+#### E-07/B02
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap.md` §6.2 `E-07`; обязательный gate `EVIDENCE_GATE`
+- Problem: новый offline runner повторно использовал один `unittest.TestLoader` для нескольких независимых start directories; после discovery существующих consumer tests второй discovery завершался internal assertion до E-07 suites.
+- Evidence: первый fast command `python3 tests/run_offline.py`, exit 1: `AssertionError: Path must be within the project` в `unittest.loader.discover`; после отдельного loader проявился отсутствующий project root в `sys.path`, что также мешало CLI deliberate fixture.
+- Unblock: использовать независимый loader для каждого start directory, явно добавить project root в `sys.path` runner-ов и повторить полный offline suite.
+- Resolution: host offline suite и exact-image `scripts/check unit` выполнили все 48 tests; deliberate failing fixture отдельно завершилась ожидаемым exit 1 с наблюдаемым expected/actual mismatch.
+
+#### E-07/B03
+- State: RESOLVED
+- Category: REVIEW
+- Affects: обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: первый fresh read-only reviewer не успел завершить содержательный review в заданный timeout и не вернул verdict.
+- Evidence: reviewer call 1 завершился infrastructure timeout через 120 s после 32 read-only tool calls; output содержит только recovery summary, `VERDICT` отсутствует; tracked files reviewer не менял, post-call `git diff --check` прошёл.
+- Unblock: повторить fresh read-only review с достаточным timeout и более компактным cold-start packet.
+- Resolution: reviewer call 2 завершился содержательно и вернул `VERDICT BLOCK` с тремя конкретными findings E-07/B04–B06.
+
+#### E-07/B04
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §7.2; обязательный gate `EVIDENCE_GATE`
+- Problem: evidence validator не требует полный набор обязательных assertion names выбранного AC из acceptance manifest, поэтому неполный документ может получить `PASS`.
+- Evidence: reviewer call 2: AC-005 manifest требует `unique_raw_records`, `stale_status`, `latest_projection`, `watermark`, но example с двумя assertions успешно валидируется; `VERDICT BLOCK`.
+- Unblock: связать validator с manifest, требовать exact assertion set для AC, расширить example и negative tests.
+- Resolution: validator загружает versioned acceptance manifest и требует exact ordered assertion set выбранного AC; example содержит все четыре AC-005 assertions; regressions удаляют/переставляют каждое обязательное имя и получают expected `EvidenceError`.
+
+#### E-07/B05
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §7.3; запрет secrets/auth config/environment dumps в evidence
+- Problem: redaction validator проверяет в основном имена keys и допускает credential-bearing values, бессодержательный redaction list и запрещённые классы artifact paths.
+- Evidence: reviewer call 2 воспроизводит проход URI с credentials, `password=...` в summary, `redactions=["none"]`, `docker-inspect.json`/`auth-config.json`/`full-environment.json`; `VERDICT BLOCK`.
+- Unblock: ввести versioned required redaction categories, value-level sensitive patterns, forbidden artifact classes и targeted negative tests.
+- Resolution: общий assignment scanner использует `_is_sensitive_identifier`, command validator проверяет adjacent sensitive argv; targeted regressions отклоняют `--password hunter2`, `--access-key-id=AKIAEXAMPLE` и text artifact `AWS_ACCESS_KEY_ID=AKIAEXAMPLE`. Host/exact-image suites по 54 tests и direct negative probes прошли; ordering-token exemptions и positive artifacts не регрессировали.
+
+#### E-07/B06
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §7.3; достоверность и атомарность evidence bundle
+- Problem: writer публикует index для несуществующих/unverified artifacts и создаёт final run directory до завершения записи, оставляя partial path после failure.
+- Evidence: reviewer call 2: arbitrary SHA/path принимается без файла; failure при final replace оставляет directory и блокирует retry; `VERDICT BLOCK`.
+- Unblock: staging полного bundle в hidden sibling directory, проверка существования/content hash и допустимого содержимого artifacts, index last, atomic directory rename, cleanup/retry tests.
+- Resolution: writer отслеживает успешный rename и при последующей ошибке удаляет опубликованный final bundle с best-effort parent fsync; injected failure именно на post-rename parent fsync оставляет final/staging paths отсутствующими, после снятия injection retry публикуется успешно.
+
+#### E-07/B07
+- State: RESOLVED
+- Category: TEST
+- Affects: `docs/bootstrap.md` §7.2; `AC-004`, `AC-007`, `AC-011`; обязательный gate `EVIDENCE_GATE`
+- Problem: acceptance evidence manifest не требует всех обязательных доказательств: unchanged projection после duplicate, offset advancement после migration replay, slot state/limit и topic log offsets.
+- Evidence: fresh reviewer call 1 сопоставил manifest с `docs/bootstrap.md` §7.2 и показал, что документы с текущими неполными exact assertion sets проходят validator с PASS.
+- Unblock: добавить explicit assertion names для AC-004/007/011 и unit regression на их exact semantic sets, затем повторить affected checks.
+- Resolution: manifest добавляет `projection_unchanged_after_duplicate` для AC-004, `offset_after_replay` для AC-007, `topic_log_offsets` и `slot_state_and_limit` для AC-011; unit regression фиксирует exact semantic sets, host и exact-image suites прошли.
+
+#### E-07/B08
+- State: RESOLVED
+- Category: TEST
+- Affects: обязательный gate `EVIDENCE_GATE`; CSV credential regression для E-07/B05
+- Problem: первый targeted CSV regression использовал artifact path `queries/secrets.csv`, который отклоняется path policy до проверки credential-bearing CSV content.
+- Evidence: targeted test exit 1; ожидался `key/value`, фактически `artifacts[0].path is a prohibited evidence class`.
+- Unblock: использовать нейтральный разрешённый artifact path и повторить targeted test, чтобы доказать именно content validator.
+- Resolution: artifact path изменён на разрешённый `queries/values.csv`; targeted regression достиг content validator и ожидаемо отклонил credential-bearing key/value, затем прошёл в полном host/exact-image suite.
+
+#### E-07/B09
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §7.3; разрешённые ordering metadata в evidence
+- Problem: structural JSON/CSV name-value representations `ordering_token` и `source_position_token` ошибочно классифицируются как credentials, хотя direct object keys явно разрешены.
+- Evidence: fresh reviewer call 2 проследил `_reject_name_value_pair` до broad `token` regex; direct-key positive test не покрывает structural forms.
+- Unblock: применить `ORDERING_TOKEN_KEYS` exemption в structural name/value validator и добавить positive JSON/CSV regressions для обоих identifiers.
+- Resolution: structural validator нормализует identifier и применяет `ORDERING_TOKEN_KEYS` exemption до broad token matching; positive JSON `ordering_token` и CSV `source_position_token` artifacts публикуются, credential negatives продолжают отклоняться.
+
+#### E-07/B10
+- State: RESOLVED
+- Category: CODE
+- Affects: обязательный gate `EVIDENCE_GATE`; media-type-independent CSV sniffing
+- Problem: первый fix запускает strict CSV parser на каждом text artifact и из-за этого отклоняет валидный JSON ordering-token artifact как malformed CSV.
+- Evidence: targeted positive ordering test exit 1: `_csv.Error: ',' expected after '"'`, преобразованный в `artifact queries/ordering.json is not valid CSV`.
+- Unblock: отделить best-effort CSV sniffing от strict validation: malformed CSV должен блокировать только declared `text/csv`, затем повторить positive/negative regressions.
+- Resolution: CSV sniffer получил режим `require_valid`; best-effort sniff для non-CSV не блокирует valid JSON, а declared `text/csv` сохраняет strict failure. Targeted ordering positive и full host/exact-image suites прошли.
+
+#### E-07/B11
+- State: RESOLVED
+- Category: CODE
+- Affects: `docs/bootstrap.md` §7.3; обязательный gate `FRESH_READ_ONLY_REVIEW`
+- Problem: единая sensitive-identifier vocabulary не распознаёт обычные `auth`/`authentication` identifiers и допускает credential values в split argv, text assignment и JSON field.
+- Evidence: reviewer call 1 воспроизвёл `--auth dXNlcjpwYXNz`, `auth=dXNlcjpwYXNz` и `{"auth":"dXNlcjpwYXNz"}`; `_is_sensitive_identifier("auth")` возвращает false; `VERDICT BLOCK`.
+- Unblock: добавить `auth`, `_auth`, `authentication`, `auth_config` в общую vocabulary, три targeted negative regressions, повторить affected/full checks и fresh review.
+- Resolution: общая exact vocabulary теперь включает `auth`, `_auth`, `authentication`, `auth_config`; targeted regressions и direct probes отклоняют split argv, text assignment и JSON fields. Affected tests PASS 0.09 s; host 54 tests PASS 1.07 s; exact-image network-none 54 tests PASS 1.55 s; `py_compile`, `git diff --check`, LSP PASS.
 
 ### Review
-- Verdict: NOT_RUN
-- Calls: 0
-- Fix iterations: 0
-- Details: fresh review не запускался, потому что PRECHECK выявил отсутствующие обязательные зависимости до изменения product/test code.
+- Verdict: OK
+- Calls: 4
+- Fix iterations: 1
+- Details: call 1 вернул BLOCK по B11; после targeted fix call 2 подтвердил содержательный diff/evidence; call 3 проверил status consistency; final call 4 подтвердил исправленное final-state AC evidence, отсутствие post-review drift и вернул `VERDICT OK`. Неблокирующее IMPROVEMENT: fsync nested artifact directories перед publication.
 
 ### Next action
-Пользователю поручить реализацию следующей обязательной зависимости `R-06` отдельным запуском implement.
+Пользователю проверить review-ready diff и при согласии создать checkpoint commit.
 
 ## TASK_ID: R-06
 

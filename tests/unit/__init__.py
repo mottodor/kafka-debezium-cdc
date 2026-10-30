@@ -1,0 +1,1 @@
+"""Fast fixture contract tests."""

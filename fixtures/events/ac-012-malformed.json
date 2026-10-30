@@ -1,0 +1,39 @@
+{
+  "fixture_version": 1,
+  "ac_id": "AC-012",
+  "source": "docs/spec.md §9 AC-012",
+  "generation": "g001",
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "invalid_envelope",
+      "topic": "cdc.g001.public.customers",
+      "partition": 2,
+      "offset": 12001,
+      "key_id": 9012,
+      "raw_value_utf8": "{\"schema\":{},\"payload\":{\"op\":\"x\"}}",
+      "attempts": 2,
+      "expected_error_class": "RecordValidationError",
+      "expected_error_contains": "unexpected value schema"
+    }
+  ],
+  "expected": {
+    "outcomes": [
+      {
+        "name": "invalid_envelope",
+        "error_class": "RecordValidationError",
+        "attempt_count": 2
+      }
+    ],
+    "projection": null,
+    "watermark": null,
+    "raw": [],
+    "errors": [
+      {
+        "offset": 12001,
+        "error_class": "RecordValidationError",
+        "attempt_count": 2
+      }
+    ]
+  }
+}

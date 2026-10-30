@@ -1,0 +1,62 @@
+{
+  "format_version": 1,
+  "source": "docs/bootstrap.md §7.2",
+  "criteria": [
+    {
+      "ac_id": "AC-001",
+      "required_assertions": ["source_rows", "raw_snapshot_events", "projection_rows", "connector_streaming"]
+    },
+    {
+      "ac_id": "AC-002",
+      "required_assertions": ["source_sink_parity", "raw_streaming_events", "kafka_coordinates"]
+    },
+    {
+      "ac_id": "AC-003",
+      "required_assertions": ["delete_event", "tombstone_event", "projection_absent", "delete_watermark"]
+    },
+    {
+      "ac_id": "AC-004",
+      "required_assertions": ["durable_precommit_state", "duplicate_coordinate", "delivery_count", "projection_unchanged_after_duplicate", "offset_after_restart"]
+    },
+    {
+      "ac_id": "AC-005",
+      "required_assertions": ["unique_raw_records", "stale_status", "latest_projection", "watermark"]
+    },
+    {
+      "ac_id": "AC-006",
+      "required_assertions": ["delete_watermark", "stale_old_event", "projection_absent"]
+    },
+    {
+      "ac_id": "AC-007",
+      "required_assertions": ["pre_migration_fail_stop", "offset_unchanged", "same_coordinate_replay", "phone_projection", "offset_after_replay"]
+    },
+    {
+      "ac_id": "AC-008",
+      "required_assertions": ["child_applies_first", "intermediate_dangling_state", "final_source_parity"]
+    },
+    {
+      "ac_id": "AC-009",
+      "required_assertions": ["partition_lag", "durable_event_age", "retained_wal_bytes"]
+    },
+    {
+      "ac_id": "AC-010",
+      "required_assertions": ["old_generation_read_only", "isolated_identifiers", "new_snapshot_streaming", "stable_parity_lag"]
+    },
+    {
+      "ac_id": "AC-011",
+      "required_assertions": ["topic_retention", "topic_log_offsets", "wal_warning", "slot_state_and_limit", "sqlite_controlled_stop", "disk_preflight_refusal"]
+    },
+    {
+      "ac_id": "AC-012",
+      "required_assertions": ["projection_unchanged", "offset_unchanged", "durable_error", "nonzero_exit", "same_record_retry"]
+    },
+    {
+      "ac_id": "AC-013",
+      "required_assertions": ["connector_snapshot_streaming", "role_attributes", "effective_grants", "dml_denied"]
+    },
+    {
+      "ac_id": "AC-014",
+      "required_assertions": ["no_new_snapshot", "same_slot_offsets", "new_streaming_record", "sink_updated"]
+    }
+  ]
+}

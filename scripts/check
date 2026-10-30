@@ -14,8 +14,8 @@ Usage:
   scripts/check acceptance AC-001
   scripts/check acceptance all
 
-Acceptance orchestration is added by E-07/R-09. Until then acceptance selectors fail
-closed with a nonzero status; an unavailable or empty selection is never a pass.
+E-07 provides deterministic fixtures and the evidence contract. Acceptance orchestration
+is added by R-09; until then selectors fail closed and are never reported as passes.
 EOF
 }
 
@@ -42,13 +42,15 @@ unit_checks() {
     --tmpfs /tmp:size=64m \
     --volume "$PROJECT_ROOT/consumer/src:/opt/cdc/consumer/src:ro" \
     --volume "$PROJECT_ROOT/consumer/tests:/opt/cdc/consumer/tests:ro" \
+    --volume "$PROJECT_ROOT/tests:/opt/cdc/tests:ro" \
+    --volume "$PROJECT_ROOT/fixtures:/opt/cdc/fixtures:ro" \
     --volume "$PROJECT_ROOT/scripts:/opt/cdc/scripts:ro" \
     --volume "$PROJECT_ROOT/config:/opt/cdc/config:ro" \
     --volume "$COMPOSE_FILE:/opt/cdc/compose.yaml:ro" \
     --env PYTHONPATH=/opt/cdc/consumer/src \
     --workdir /opt/cdc \
     "$CONSUMER_IMAGE" \
-    python -m unittest discover --start-directory consumer/tests --verbose \
+    python tests/run_offline.py \
     >"$output" 2>&1
   local status=$?
   set -e
@@ -138,7 +140,7 @@ acceptance_checks() {
   if [[ "$selector" != "all" && ! "$selector" =~ ^AC-0(0[1-9]|1[0-4])$ ]]; then
     fail "unknown acceptance selector: $selector" 64
   fi
-  fail "acceptance $selector is unavailable until E-07/R-09 adds non-empty end-to-end assertions and evidence capture" 69
+  fail "acceptance $selector is unavailable until R-09 adds end-to-end orchestration for the E-07 fixtures and evidence contract" 69
 }
 
 main() {

@@ -1,0 +1,94 @@
+{
+  "fixture_version": 1,
+  "ac_id": "AC-005",
+  "source": "docs/spec.md §9 AC-005",
+  "generation": "g001",
+  "schema_version": 1,
+  "records": [
+    {
+      "name": "newer_update",
+      "topic": "cdc.g001.public.customers",
+      "partition": 0,
+      "offset": 5001,
+      "key_id": 9001,
+      "operation": "u",
+      "source_lsn": 500,
+      "transaction_total_order": 2,
+      "transaction_data_collection_order": 2,
+      "before": {
+        "id": 9001,
+        "email": "fixture-9001@example.test",
+        "full_name": "Older Name",
+        "status": "active",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:00.000000Z"
+      },
+      "after": {
+        "id": 9001,
+        "email": "fixture-9001@example.test",
+        "full_name": "Newest Name",
+        "status": "inactive",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:02.000000Z"
+      }
+    },
+    {
+      "name": "older_update",
+      "topic": "cdc.g001.public.customers",
+      "partition": 0,
+      "offset": 5002,
+      "key_id": 9001,
+      "operation": "u",
+      "source_lsn": 400,
+      "transaction_total_order": 1,
+      "transaction_data_collection_order": 1,
+      "before": {
+        "id": 9001,
+        "email": "fixture-9001@example.test",
+        "full_name": "Original Name",
+        "status": "active",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:00.000000Z"
+      },
+      "after": {
+        "id": 9001,
+        "email": "fixture-9001@example.test",
+        "full_name": "Older Name",
+        "status": "active",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:01.000000Z"
+      }
+    }
+  ],
+  "expected": {
+    "outcomes": [
+      {"name": "newer_update", "status": "applied", "duplicate": false},
+      {"name": "older_update", "status": "stale", "duplicate": false}
+    ],
+    "projection": {
+      "table": "customers",
+      "id": 9001,
+      "row": {
+        "email": "fixture-9001@example.test",
+        "full_name": "Newest Name",
+        "status": "inactive",
+        "created_at": "2026-01-01T00:00:00.000000Z",
+        "updated_at": "2026-01-01T00:00:02.000000Z"
+      }
+    },
+    "watermark": {
+      "table": "customers",
+      "entity_key": "9001",
+      "phase_rank": 1,
+      "source_lsn": 500,
+      "transaction_total_order": 2,
+      "transaction_data_collection_order": 2,
+      "last_was_delete": 0
+    },
+    "raw": [
+      {"offset": 5001, "operation": "u", "processing_status": "applied"},
+      {"offset": 5002, "operation": "u", "processing_status": "stale"}
+    ],
+    "errors": []
+  }
+}
